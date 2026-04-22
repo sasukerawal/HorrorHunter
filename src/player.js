@@ -57,9 +57,21 @@ export class Player {
         this.hideExitPos    = null
         this._activeLocker  = null
 
+        // HP system
+        this.hp    = 3
+        this.maxHp = 3
+
         // Camera shake
         this.shakeAmount    = 0
         this.shakeDecay     = 5
+        this._groundRaycaster = new THREE.Raycaster()
+        this._downVector      = new THREE.Vector3(0, -1, 0)
+        this._moveDir         = new THREE.Vector3()
+        this._camForward      = new THREE.Vector3()
+        this._camRight        = new THREE.Vector3()
+        this._inputForce      = new THREE.Vector3()
+        this._delta           = new THREE.Vector3()
+        this._groundMeshes    = []
 
         // Mouse look
         this.euler = new THREE.Euler(0, 0, 0, 'YXZ')
@@ -144,36 +156,138 @@ export class Player {
     }
 
     _createPeerMesh() {
-        const bodyGeo = new THREE.CapsuleGeometry(0.35, 1.0, 4, 8)
-        const bodyMat = new THREE.MeshStandardMaterial({
-            color: '#888888', roughness: 0.8, transparent: true, opacity: 1.0
-        })
-        this.peerMesh = new THREE.Mesh(bodyGeo, bodyMat)
-        this.peerMesh.castShadow = true
+        // Peer mesh is created after role is set; use a placeholder group now
+        this.peerMesh = new THREE.Group()
         this.peerMesh.visible = false
+        this.engine.scene.add(this.peerMesh)
+    }
 
-        const headGeo = new THREE.BoxGeometry(0.45, 0.42, 0.45)
-        const headMat = new THREE.MeshStandardMaterial({ color: '#aaaaaa', roughness: 0.6, transparent: true })
-        this.peerHead = new THREE.Mesh(headGeo, headMat)
-        this.peerHead.position.set(0, 0.85, 0)
+    /** Called after setRole — rebuilds the peer mesh for the opponent's appearance */
+    _buildPeerModel() {
+        // Remove old mesh children
+        while (this.peerMesh.children.length) this.peerMesh.remove(this.peerMesh.children[0])
+
+        const peerIsPrey = this.role === 'hunter'  // our peer is the opposite role
+
+        if (peerIsPrey) {
+            this._buildCatPeer()
+        } else {
+            this._buildHumanoidPeer()
+        }
+    }
+
+    /** Humanoid hunter model — torso, head, arms, legs */
+    _buildHumanoidPeer() {
+        const matBody = new THREE.MeshStandardMaterial({ color: '#661111', roughness: 0.7, metalness: 0.2, transparent: true })
+        const matSkin  = new THREE.MeshStandardMaterial({ color: '#aa8866', roughness: 0.8, transparent: true })
+        const matDark  = new THREE.MeshStandardMaterial({ color: '#333333', roughness: 0.6, metalness: 0.4, transparent: true })
+
+        // Torso
+        const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.7, 0.3), matBody)
+        torso.position.set(0, 0.1, 0)
+        torso.castShadow = true
+        this.peerMesh.add(torso)
+
+        // Head
+        this.peerHead = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.35, 0.32), matSkin)
+        this.peerHead.position.set(0, 0.65, 0)
+        this.peerHead.castShadow = true
         this.peerMesh.add(this.peerHead)
 
-        const noseGeo = new THREE.ConeGeometry(0.08, 0.22, 6)
-        const noseMat = new THREE.MeshBasicMaterial({ color: '#00ffcc', transparent: true })
-        this.peerNose = new THREE.Mesh(noseGeo, noseMat)
-        this.peerNose.rotation.x = Math.PI / 2
-        this.peerNose.position.set(0, 0.85, -0.28)
-        this.peerMesh.add(this.peerNose)
+        // Eyes (red emissive)
+        const eyeMat = new THREE.MeshBasicMaterial({ color: '#ff2200' })
+        const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.04, 6, 6), eyeMat)
+        eyeL.position.set(-0.08, 0.68, -0.16)
+        this.peerMesh.add(eyeL)
+        const eyeR = new THREE.Mesh(new THREE.SphereGeometry(0.04, 6, 6), eyeMat)
+        eyeR.position.set(0.08, 0.68, -0.16)
+        this.peerMesh.add(eyeR)
 
-        this.engine.scene.add(this.peerMesh)
+        // Arms
+        for (const side of [-1, 1]) {
+            const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.05, 0.6, 6), matBody)
+            arm.position.set(side * 0.35, -0.0, 0)
+            arm.castShadow = true
+            this.peerMesh.add(arm)
+        }
+
+        // Legs
+        for (const side of [-1, 1]) {
+            const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.06, 0.7, 6), matDark)
+            leg.position.set(side * 0.15, -0.6, 0)
+            leg.castShadow = true
+            this.peerMesh.add(leg)
+        }
+
+        // Flashlight prop on right arm
+        const flProp = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.02, 0.2, 6), matDark)
+        flProp.rotation.x = Math.PI / 2
+        flProp.position.set(0.35, -0.1, -0.15)
+        this.peerMesh.add(flProp)
+
+        this.peerNose = null  // no nose on humanoid
+    }
+
+    /** Cat-like prey model — body, head with ears, tail, four legs */
+    _buildCatPeer() {
+        const matBody = new THREE.MeshStandardMaterial({ color: '#1133cc', roughness: 0.6, metalness: 0.1, transparent: true })
+        const matAccent = new THREE.MeshStandardMaterial({ color: '#0088ff', roughness: 0.5, transparent: true })
+        const matEye = new THREE.MeshBasicMaterial({ color: '#00ffcc' })
+
+        // Body (small low prey silhouette)
+        const body = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 6), matBody)
+        body.scale.set(1, 0.55, 1.35)
+        body.position.set(0, -1.18, 0)
+        body.castShadow = false
+        this.peerMesh.add(body)
+
+        // Head
+        this.peerHead = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 6), matBody)
+        this.peerHead.position.set(0, -1.08, -0.28)
+        this.peerHead.castShadow = false
+        this.peerMesh.add(this.peerHead)
+
+        // Ears (cones)
+        for (const side of [-1, 1]) {
+            const ear = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.09, 4), matAccent)
+            ear.position.set(side * 0.065, -0.94, -0.27)
+            ear.rotation.z = side * 0.2
+            this.peerMesh.add(ear)
+        }
+
+        // Eyes (glowing cyan)
+        const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.018, 5, 5), matEye)
+        eyeL.position.set(-0.04, -1.07, -0.38)
+        this.peerMesh.add(eyeL)
+        const eyeR = new THREE.Mesh(new THREE.SphereGeometry(0.018, 5, 5), matEye)
+        eyeR.position.set(0.04, -1.07, -0.38)
+        this.peerMesh.add(eyeR)
+
+        // Legs (4 thin cylinders)
+        const legPositions = [[-0.08, -0.16], [0.08, -0.16], [-0.08, 0.14], [0.08, 0.14]]
+        for (const [lx, lz] of legPositions) {
+            const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.015, 0.22, 5), matAccent)
+            leg.position.set(lx, -1.36, lz)
+            leg.castShadow = false
+            this.peerMesh.add(leg)
+        }
+
+        // Tail (curved segments)
+        const tailMat = matAccent
+        for (let i = 0; i < 5; i++) {
+            const seg = new THREE.Mesh(new THREE.SphereGeometry(0.022 - i * 0.0025, 5, 5), tailMat)
+            seg.position.set(0, -1.17 + i * 0.035, 0.28 + i * 0.055)
+            this.peerMesh.add(seg)
+        }
+
+        this.peerNose = null  // no separate nose on cat
     }
 
     setRole(role, spawnPos = null) {
         this.role = role
         const peerIsPrey = role === 'hunter'
         if (this.peerMesh) {
-            this.peerMesh.material.color.set(peerIsPrey ? '#1133cc' : '#cc2200')
-            this.peerMesh.material.emissive.set(peerIsPrey ? '#000833' : '#330000')
+            this._buildPeerModel()
         }
         const map = this.engine.mapData
         if (spawnPos) {
@@ -184,6 +298,13 @@ export class Player {
             this.position.copy(map?.spawnPrey ?? new THREE.Vector3(0, 1.7, 21))
         }
         this.position.y = 1.7
+        if (this._isInsideAnyCollider(this.position)) {
+            const safe = this._findNearestSafePos(this.position)
+            if (safe) {
+                safe.y = 1.7
+                this.position.copy(safe)
+            }
+        }
         this.velocity.set(0, 0, 0)
         this.isOnGround = true
         this.spawnSettleTimer = 0.4
@@ -237,7 +358,7 @@ export class Player {
             new THREE.Vector3(pos.x - this.radius, pos.y - this.height + FOOT_LIFT, pos.z - this.radius),
             new THREE.Vector3(pos.x + this.radius, pos.y + 0.1, pos.z + this.radius)
         )
-        for (const { box } of this.engine.collisionMeshes) {
+        for (const { box } of this.engine.getCollisionEntriesNear(pos)) {
             if (box.max.y <= pos.y - this.height + 0.05) continue
             if (box.min.y >= pos.y + 0.05) continue
             if (playerBox.intersectsBox(box)) return true
@@ -309,14 +430,11 @@ export class Player {
 
         const wishSpeed = this.baseSpeed * (fearModifiers.preySpeed ?? 1)
 
-        // Movement direction from camera facing
-        const dir = new THREE.Vector3()
-        const camForward = new THREE.Vector3()
-        const camRight   = new THREE.Vector3()
-        this.camera.getWorldDirection(camForward)
-        camForward.y = 0
-        camForward.normalize()
-        camRight.crossVectors(camForward, new THREE.Vector3(0, 1, 0)).normalize()
+        // Movement follows yaw only, so looking straight up/down never kills horizontal input.
+        const dir = this._moveDir.set(0, 0, 0)
+        const yaw = this.euler.y
+        const camForward = this._camForward.set(-Math.sin(yaw), 0, -Math.cos(yaw))
+        const camRight   = this._camRight.set(Math.cos(yaw), 0, -Math.sin(yaw))
 
         if (this.keys.w) dir.addScaledVector(camForward,  1)
         if (this.keys.s) dir.addScaledVector(camForward, -1)
@@ -342,7 +460,7 @@ export class Player {
         const friction  = this.isOnGround ? this.groundFriction : this.airFriction
         const accelMul  = this.isOnGround ? this.groundAccelMul : this.airAccelMul
         const accelMag  = currentSpeed * accelMul
-        const inputForce = dir.clone().multiplyScalar(accelMag)
+        const inputForce = this._inputForce.copy(dir).multiplyScalar(accelMag)
         const dragX = this.velocity.x * friction
         const dragZ = this.velocity.z * friction
         this.velocity.x += (inputForce.x - dragX) * dt
@@ -386,7 +504,7 @@ export class Player {
         }
 
         // Move & collide
-        const delta = this.velocity.clone().multiplyScalar(dt)
+        const delta = this._delta.copy(this.velocity).multiplyScalar(dt)
         this._moveAndCollide(delta)
 
         // Camera follows
@@ -425,13 +543,14 @@ export class Player {
         }
 
         const FOOT_LIFT = 0.1
+        const collisionCandidates = this.engine.getCollisionEntriesNear(nextPos)
         const playerBox = new THREE.Box3(
             new THREE.Vector3(nextPos.x - this.radius, nextPos.y - this.height + FOOT_LIFT, nextPos.z - this.radius),
             new THREE.Vector3(nextPos.x + this.radius, nextPos.y + 0.1, nextPos.z + this.radius)
         )
 
         let blocked = false
-        for (const { box } of this.engine.collisionMeshes) {
+        for (const { box } of collisionCandidates) {
             if (box.max.y <= nextPos.y - this.height + 0.05) continue
             if (box.min.y >= nextPos.y + 0.05) continue
             if (playerBox.intersectsBox(box)) { blocked = true; break }
@@ -450,7 +569,7 @@ export class Player {
                     new THREE.Vector3(test.x - this.radius, nextPos.y - this.height + FOOT_LIFT, test.z - this.radius),
                     new THREE.Vector3(test.x + this.radius, nextPos.y + 0.1, test.z + this.radius)
                 )
-                for (const { box } of this.engine.collisionMeshes) {
+                for (const { box } of this.engine.getCollisionEntriesNear(test)) {
                     if (box.max.y <= nextPos.y - this.height + 0.05) continue
                     if (box.min.y >= nextPos.y + 0.05) continue
                     if (tBox.intersectsBox(box)) return false
@@ -492,10 +611,21 @@ export class Player {
             return
         }
 
+        if (this.velocity.y > 0.05) {
+            this.isOnGround = false
+            return
+        }
+
         const rayOrigin = this.position.clone()
         rayOrigin.y += 0.3
-        const ray = new THREE.Raycaster(rayOrigin, new THREE.Vector3(0, -1, 0), 0, this.height + 0.6)
-        const hits = ray.intersectObjects(this.engine.collisionMeshes.map(c => c.mesh), false)
+        this._groundRaycaster.set(rayOrigin, this._downVector)
+        this._groundRaycaster.near = 0
+        this._groundRaycaster.far = this.height + 0.6
+        this._groundMeshes.length = 0
+        for (const { mesh } of this.engine.getCollisionEntriesNear(this.position)) {
+            if (mesh) this._groundMeshes.push(mesh)
+        }
+        const hits = this._groundRaycaster.intersectObjects(this._groundMeshes, false)
         if (hits.length > 0) {
             const groundY = hits[0].point.y
             const desiredY = groundY + this.height
@@ -537,16 +667,18 @@ export class Player {
         this.peerPosition.set(data.x, data.y, data.z)
         this.peerMesh.position.copy(this.peerPosition)
 
-        // Phase translucency
+        // Phase translucency — traverse all children since peerMesh is a Group
         const op = this.peerIsPhasing ? 0.3 : 1.0
-        if (this.peerMesh.material)        this.peerMesh.material.opacity = op
-        if (this.peerHead?.material)       this.peerHead.material.opacity = op
-        if (this.peerNose?.material)       this.peerNose.material.opacity = op
+        this.peerMesh.traverse((child) => {
+            if (child.material) {
+                child.material.opacity = op
+                child.material.transparent = op < 1
+            }
+        })
 
         if (data.ry !== undefined) this.peerMesh.rotation.y = data.ry
         if (this.peerHead && data.rx !== undefined) {
             this.peerHead.rotation.x = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, data.rx))
-            if (this.peerNose) this.peerNose.rotation.x = Math.PI / 2 + this.peerHead.rotation.x * 0.5
         }
     }
 
@@ -569,4 +701,16 @@ export class Player {
 
     getStamina()        { return this.stamina }
     getPhaseCooldown()  { return this.phaseCooldown }
+    getHP()             { return this.hp }
+    getMaxHP()          { return this.maxHp }
+
+    takeDamage(amount = 1) {
+        this.hp = Math.max(0, this.hp - amount)
+        this.triggerShake(0.12)
+        return this.hp <= 0  // returns true if dead
+    }
+
+    heal(amount = 1) {
+        this.hp = Math.min(this.maxHp, this.hp + amount)
+    }
 }

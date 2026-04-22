@@ -8,6 +8,7 @@ import { HUD } from './hud.js'
 import { Lobby } from './lobby.js'
 import { AudioSystem } from './audio.js'
 import { Viewmodel } from './viewmodel.js'
+import { Biometrics } from './biometrics.js'
 import * as THREE from 'three'
 
 const socket = io()
@@ -16,13 +17,14 @@ const engine = new Engine()
 const hud = new HUD()
 const lobby = new Lobby(socket)
 const audio = new AudioSystem()
+const biometrics = new Biometrics()
 
 let player = null
 let netGun = null
 let viewmodel = null
 let fearSystem = null
 let role = 'prey'
-let peerId = null
+let peers = []         // { id, role } from server
 let gameRunning = false
 let elapsed = 0
 let extractionEmergencyTriggered = false
@@ -36,6 +38,7 @@ const EXTRACTION_REQUIRED = 5
 // Peer state mirrored from socket
 let peerFear = 0
 let peerBPM  = 75
+const doorPromptPos = new THREE.Vector3()
 
 // E (interact) and F (flashlight) — single key-edge handler
 let eKeyPressed = false
@@ -47,12 +50,15 @@ document.addEventListener('keydown', (e) => {
 })
 
 // ─── GAME START ───
-lobby.onGameStart = (assignedRole, assignedPeerId) => {
+lobby.onGameStart = (assignedRole, assignedPeers) => {
     role = assignedRole
-    peerId = assignedPeerId
+    peers = assignedPeers  // array of { id, role }
 
     audio.init()
     audio.startAmbientDrone()
+
+    // Try to init biometrics (will request camera permission)
+    biometrics.init()
 
     const canvas = document.getElementById('game-canvas')
     engine.init(canvas)
@@ -71,9 +77,8 @@ lobby.onGameStart = (assignedRole, assignedPeerId) => {
 
         if (role === 'hunter') {
             netGun = new NetGun(engine.camera, engine, socket, audio)
-            netGun.setPeerPlayerId(peerId)
-            netGun.setPreyMesh(player.peerMesh)
-            netGun.viewmodel = viewmodel
+            // Set all prey meshes for hitscan targeting
+            netGun.setPreyMeshes([player.peerMesh])
         }
 
         // Phase / hide hooks → visuals
@@ -110,7 +115,7 @@ lobby.onGameStart = (assignedRole, assignedPeerId) => {
 // ─── SOCKET EVENTS ───
 socket.on('peerMove', (data) => {
     if (player) player.updatePeer(data)
-    if (netGun) netGun.setPeerPhasing(!!data.isPhasing)
+    if (netGun && data.isPhasing !== undefined) netGun.setPeerPhasing(!!data.isPhasing)
 })
 
 socket.on('peerFear', (data) => {
@@ -133,22 +138,64 @@ socket.on('netHit', (data) => {
                 setTimeout(() => { flash.style.opacity = '0' }, 250)
             }
             audio.playNetHit()
-            if (fearSystem) fearSystem.hunterDistance = Math.min(fearSystem.hunterDistance, 3)
+            audio.playDamageTaken()
+            if (player) {
+                const isDead = player.takeDamage(1)
+                hud.setHP(player.getHP(), player.getMaxHP())
+                if (fearSystem) fearSystem.hunterDistance = Math.min(fearSystem.hunterDistance, 3)
+
+                if (isDead) {
+                    gameRunning = false
+                    socket.emit('caughtPrey')
+                    audio.playGameOver('hunter')
+                    hud.showGameOver('hunter')
+                    _spawnCaughtNet(engine.camera, null)
+                }
+            }
         }
     }
 })
 
+socket.on('preyHP', ({ id, hp }) => {
+    // Could display other prey HP in multi-player
+    console.log(`[HP] ${id}: ${hp} HP remaining`)
+})
+
 socket.on('preyCaught', () => {
-    gameRunning = false
-    audio.playGameOver('hunter')
-    hud.showGameOver('hunter')
-    if (role === 'prey') _spawnCaughtNet(engine.camera, null)
+    if (role === 'prey') {
+        gameRunning = false
+        audio.playGameOver('hunter')
+        hud.showGameOver('hunter')
+        _spawnCaughtNet(engine.camera, null)
+    }
+})
+
+socket.on('playerEliminated', ({ id }) => {
+    console.log(`[GAME] Player ${id} eliminated`)
+})
+
+socket.on('playerEscaped', ({ id }) => {
+    console.log(`[GAME] Player ${id} escaped!`)
+})
+
+socket.on('healthPickedUp', ({ id, pickupIndex }) => {
+    // Another player picked up a health item — remove it locally
+    const hp = engine.healthPickups[pickupIndex]
+    if (hp && !hp.collected) {
+        hp.collected = true
+        hp.mesh.visible = false
+    }
 })
 
 socket.on('gameOver', ({ winner }) => {
     gameRunning = false
     audio.playGameOver(winner)
     hud.showGameOver(winner)
+})
+
+socket.on('peerDisconnected', ({ id }) => {
+    console.log(`[GAME] Peer ${id} disconnected`)
+    // In multi-player, the game continues if other players remain
 })
 
 let fearSyncTimer = 0
@@ -164,11 +211,11 @@ function checkHunterCatch() {
     const facing = new THREE.Vector3()
     engine.camera.getWorldDirection(facing)
     if (facing.dot(toPrey) >= CATCH_FOV) {
-        gameRunning = false
-        socket.emit('caughtPrey')
-        audio.playGameOver('hunter')
-        hud.showGameOver('hunter')
-        if (player.peerMesh) _spawnCaughtNet(null, player.peerMesh)
+        // In HP mode, proximity catch is optional — net is the primary weapon
+        // But we can still do a melee grab at very close range
+        if (dist < 1.0) {
+            socket.emit('netHitConfirm', { targetId: peers.find(p => p.role === 'prey')?.id })
+        }
     }
 }
 
@@ -190,17 +237,22 @@ function gameLoop() {
     const dt = Math.min(engine.clock.getDelta(), 0.05)
     elapsed += dt
 
+    // Update biometrics
+    biometrics.update(dt)
+    const biometricBPM = biometrics.getBPM()
+
     const manualBPM = hud.getManualBPM()
     if (role === 'prey' && player) {
         fearSystem.setHunterDistance(player.getPeerDistance())
-        fearSystem.update(dt, manualBPM && manualBPM !== 75 ? manualBPM : null)
+        const manualOrNull = manualBPM && manualBPM !== 75 ? manualBPM : null
+        fearSystem.update(dt, manualOrNull, biometricBPM)
     }
 
     const localFear = fearSystem ? fearSystem.getFear() : 0
     const localBPM  = fearSystem ? fearSystem.getBPM() : 75
     const mods      = fearSystem ? fearSystem.getGameplayModifiers() : {}
 
-    // Hunter's flashlight responds to PREY's biometrics (it's the prey's heartbeat the hunter feels via the radio link)
+    // Hunter's flashlight responds to PREY's biometrics
     const flashlightFear = role === 'prey' ? localFear : peerFear
     const flashlightBPM  = role === 'prey' ? localBPM  : peerBPM
 
@@ -219,8 +271,26 @@ function gameLoop() {
 
     engine.update(elapsed, flashlightFear, dt, flashlightBPM)
 
-    // Occlusion culling — only render player's room + adjacent open-door rooms
-    if (player) engine.updateOcclusion(player.position)
+    // Occlusion culling only does visibility work on room changes or door state changes.
+    if (player) {
+        const currentRoom = engine.findRoomContaining(player.position)
+        if (engine._occlusionDirty || player._lastOccRoomName !== currentRoom) {
+            engine.updateOcclusion(player.position, currentRoom)
+            player._lastOccRoomName = currentRoom
+        }
+    }
+
+    // ─── Health pickup check (Prey only) ───
+    if (role === 'prey' && player && player.getHP() < player.getMaxHP()) {
+        const pickup = engine.checkHealthPickup(player.position)
+        if (pickup) {
+            player.heal(1)
+            hud.setHP(player.getHP(), player.getMaxHP())
+            audio.playHealthPickup()
+            const idx = engine.healthPickups.indexOf(pickup)
+            if (idx !== -1) socket.emit('healthPickup', { pickupIndex: idx })
+        }
+    }
 
     // Audio
     const peerDist = player ? player.getPeerDistance() : Infinity
@@ -292,9 +362,8 @@ function gameLoop() {
     if (prompt && player) {
         let nearDoor = false
         engine.doors.forEach(door => {
-            const dp = new THREE.Vector3()
-            door.mesh.getWorldPosition(dp)
-            if (player.position.distanceTo(dp) < 3) nearDoor = true
+            door.mesh.getWorldPosition(doorPromptPos)
+            if (player.position.distanceTo(doorPromptPos) < 3) nearDoor = true
         })
         prompt.classList.toggle('visible', nearDoor && !player.isHiding)
     }

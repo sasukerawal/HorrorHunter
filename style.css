@@ -237,6 +237,68 @@ input#code-input:focus {
   margin-top: 6px;
 }
 
+.code-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.btn-copy {
+  padding: 8px 14px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 1px;
+  cursor: pointer;
+  border: 1px solid var(--cyan);
+  background: rgba(0, 255, 204, 0.08);
+  color: var(--cyan);
+  border-radius: 2px;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.btn-copy:hover {
+  background: rgba(0, 255, 204, 0.2);
+  box-shadow: 0 0 12px rgba(0, 255, 204, 0.3);
+}
+
+.player-count {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--cyan);
+  letter-spacing: 2px;
+  margin-top: 12px;
+}
+
+.btn-start {
+  margin-top: 12px;
+  padding: 12px 28px;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  letter-spacing: 2px;
+  cursor: pointer;
+  border: none;
+  border-radius: 2px;
+  background: linear-gradient(135deg, #00cc66, #00ff88);
+  color: #000;
+  box-shadow: 0 0 20px rgba(0, 255, 100, 0.3);
+  transition: all 0.15s;
+  width: 100%;
+}
+
+.btn-start:hover:not(:disabled) {
+  box-shadow: 0 0 30px rgba(0, 255, 100, 0.5);
+  transform: translateY(-1px);
+}
+
+.btn-start:disabled {
+  background: #333;
+  color: #666;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
 .status-msg {
   margin-top: 20px;
   font-size: 0.8rem;
@@ -701,4 +763,30 @@ body::after {
 
 #hide-hint.visible {
   opacity: 1;
+}
+
+/* ==================== HP HEARTS ==================== */
+.hp-hearts {
+  font-size: 1.4rem;
+  margin-top: 4px;
+  letter-spacing: 4px;
+  filter: drop-shadow(0 0 6px rgba(255, 0, 60, 0.6));
+  transition: all 0.15s;
+}
+
+.hp-hearts.hp-critical {
+  animation: hpFlash 0.35s infinite alternate;
+}
+
+@keyframes hpFlash {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0.5; transform: scale(1.15); filter: drop-shadow(0 0 12px rgba(255, 0, 0, 0.9)); }
+}
+
+/* ==================== BPM SOURCE INDICATOR ==================== */
+.bpm-source {
+  font-size: 0.6rem;
+  color: #555;
+  letter-spacing: 1px;
+  margin-top: 4px;
 }

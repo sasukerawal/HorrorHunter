@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>BIO-HORROR — 2-Player FPS</title>
-  <meta name="description" content="2-player multiplayer horror FPS with Biometric Fear System" />
+  <meta name="description" content="Multiplayer horror FPS with Biometric Fear System" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Creepster&display=swap"
     rel="stylesheet" />
@@ -40,11 +40,14 @@
     </div>
   </div>
 
+  <!-- Biometric camera (hidden video element for face-detection BPM) -->
+  <video id="biometric-cam" style="display:none" playsinline autoplay></video>
+
   <!-- ======================== LOBBY UI ======================== -->
   <div id="ui-overlay">
     <div class="lobby-container">
       <h1 class="glitch-title" data-text="BIO-HORROR">BIO-HORROR</h1>
-      <p class="subtitle">2-Player Multiplayer Fear FPS</p>
+      <p class="subtitle">Multiplayer Horror FPS — Biometric Fear</p>
 
       <div class="lobby-actions">
         <button id="btn-host" class="btn btn-host">🔦 HOST GAME</button>
@@ -57,8 +60,13 @@
 
       <div id="room-code-panel" style="display:none">
         <p class="code-label">ROOM CODE</p>
-        <div id="room-code" class="room-code">----</div>
-        <p class="code-hint">Share this code with your opponent</p>
+        <div class="code-row">
+          <div id="room-code" class="room-code">----</div>
+          <button id="btn-copy-code" class="btn btn-copy">📋 COPY</button>
+        </div>
+        <p class="code-hint">Share this code with your opponents</p>
+        <p id="player-count" class="player-count">Players: 1/8</p>
+        <button id="btn-start-game" class="btn btn-start hidden">🎮 START GAME</button>
       </div>
 
       <p id="status-msg" class="status-msg">Choose to Host or Join a game</p>
@@ -74,15 +82,17 @@
 
   <!-- ======================== HUD ======================== -->
   <div id="hud" class="hidden">
-    <!-- Top left: Timer + Role -->
+    <!-- Top left: Timer + Role + HP -->
     <div id="hud-topleft">
       <div id="hud-timer">3:00</div>
       <div id="hud-role">PREY</div>
+      <div id="hud-hp" class="hp-hearts hidden">❤️❤️❤️</div>
     </div>
 
     <!-- Top right: peer fear (shown to hunter) -->
     <div id="hud-topright">
       <div id="hud-peer-fear"></div>
+      <div id="bpm-source" class="bpm-source"></div>
     </div>
 
     <!-- Bottom right: Fear pulse graph -->

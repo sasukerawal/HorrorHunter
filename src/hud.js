@@ -22,6 +22,7 @@ export class HUD {
         this.extractArrowEl = document.getElementById('extraction-arrow')
         this.flashlightEl   = document.getElementById('flashlight-status')
         this.hideHintEl     = document.getElementById('hide-hint')
+        this.hpEl           = document.getElementById('hud-hp')
 
         this.totalTime = 180 // 3 minutes
         this.timeLeft = this.totalTime
@@ -55,6 +56,23 @@ export class HUD {
         // Phase + stamina bars are Prey-only
         if (this.staminaWrapEl) this.staminaWrapEl.classList.toggle('hidden', role !== 'prey')
         if (this.phaseWrapEl)   this.phaseWrapEl.classList.toggle('hidden',   role !== 'prey')
+        // HP display is Prey-only
+        if (this.hpEl) this.hpEl.classList.toggle('hidden', role !== 'prey')
+        if (role === 'prey') this.setHP(3, 3)
+    }
+
+    setHP(hp, maxHp = 3) {
+        if (!this.hpEl) return
+        let hearts = ''
+        for (let i = 0; i < maxHp; i++) {
+            hearts += i < hp ? '❤️' : '🖤'
+        }
+        this.hpEl.textContent = hearts
+        if (hp <= 1 && hp > 0) {
+            this.hpEl.classList.add('hp-critical')
+        } else {
+            this.hpEl.classList.remove('hp-critical')
+        }
     }
 
     /** Bloom drives crosshair size + a CSS scale. Higher fear → larger circle. */

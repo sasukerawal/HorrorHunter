@@ -221,6 +221,50 @@ export class AudioSystem {
         osc.stop(now + 0.22)
     }
 
+    // ─── HP FEEDBACK SOUNDS ───
+
+    playDamageTaken() {
+        if (!this.enabled) return
+        this._resume()
+        // Low distortion hit
+        const osc = this.ctx.createOscillator()
+        const gain = this.ctx.createGain()
+        const dist = this.ctx.createWaveShaperFunction ? null : null
+        osc.type = 'sawtooth'
+        osc.frequency.setValueAtTime(120, this.ctx.currentTime)
+        osc.frequency.exponentialRampToValueAtTime(40, this.ctx.currentTime + 0.25)
+        gain.gain.setValueAtTime(0.6, this.ctx.currentTime)
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.25)
+        const filter = this.ctx.createBiquadFilter()
+        filter.type = 'lowpass'
+        filter.frequency.value = 300
+        osc.connect(filter)
+        filter.connect(gain)
+        gain.connect(this.masterGain)
+        osc.start()
+        osc.stop(this.ctx.currentTime + 0.25)
+    }
+
+    playHealthPickup() {
+        if (!this.enabled) return
+        this._resume()
+        // Bright ascending chime
+        const freqs = [523, 659, 784]
+        freqs.forEach((freq, i) => {
+            const osc = this.ctx.createOscillator()
+            const gain = this.ctx.createGain()
+            osc.type = 'sine'
+            osc.frequency.value = freq
+            gain.gain.setValueAtTime(0, this.ctx.currentTime + i * 0.08)
+            gain.gain.linearRampToValueAtTime(0.25, this.ctx.currentTime + i * 0.08 + 0.03)
+            gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + i * 0.08 + 0.3)
+            osc.connect(gain)
+            gain.connect(this.masterGain)
+            osc.start(this.ctx.currentTime + i * 0.08)
+            osc.stop(this.ctx.currentTime + i * 0.08 + 0.3)
+        })
+    }
+
     // ─── PEER SPATIAL AUDIO (The Stalker Effect) ───
 
     /** Call once per frame: play a distance-attenuated heavy thud for the peer */

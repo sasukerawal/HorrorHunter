@@ -42,7 +42,7 @@ const WALL_HEIGHT    = 4
 const WALL_THICKNESS = 0.3
 const DOOR_WIDTH     = 2.4
 const DOOR_HEIGHT    = 2.6
-const DOOR_SAFE_RADIUS = 2.0   // hiding props avoid this radius around any door
+const DOOR_SAFE_RADIUS = 3.0   // hiding props avoid this radius around any door
 
 export const SPAWN_HUNTER = new THREE.Vector3(  0, 1.7,  0)
 export const SPAWN_PREY   = new THREE.Vector3(-14, 1.7, 14)
@@ -118,18 +118,24 @@ export function generateMap(scene, renderer = null) {
     const doors           = []
     const ventZones       = []
     const lockers         = []
-    const roomTagged      = []   // every Object3D that has userData.rooms — for occlusion culling
+    const roomObjects     = new Map(MAP_BLUEPRINT.map(room => [room.name, []]))
+    const allRoomObjects  = new Set()
 
     const roomMat = (texKey) => mats[texKey] ?? mats.generic
 
     const tagRooms = (obj, roomNames) => {
-        obj.userData.rooms = roomNames
-        roomTagged.push(obj)
+        const names = Array.isArray(roomNames) ? roomNames : [roomNames]
+        obj.userData.rooms = names
+        allRoomObjects.add(obj)
+        for (const roomName of names) {
+            const list = roomObjects.get(roomName)
+            if (list && !list.includes(obj)) list.push(obj)
+        }
     }
 
-    const registerCollision = (mesh, roomNames = null) => {
-        mesh.castShadow    = true
-        mesh.receiveShadow = true
+    const registerCollision = (mesh, roomNames = null, castsShadow = true) => {
+        mesh.castShadow    = castsShadow
+        mesh.receiveShadow = castsShadow // don't receive if not casting to save perf
         scene.add(mesh)
         collisionMeshes.push({ mesh, box: new THREE.Box3().setFromObject(mesh) })
         if (roomNames) tagRooms(mesh, roomNames)
@@ -178,15 +184,16 @@ export function generateMap(scene, renderer = null) {
         const ceilM  = mats.ceiling
 
         // Floor + ceiling — single-room tag
+        // Floor + ceiling — no shadows needed for these large static planes
         const floor = new THREE.Mesh(new THREE.BoxGeometry(w, 0.15, h), floorM)
         floor.position.set(x, -0.075, z)
         floor.name = `floor_${name}`
-        registerCollision(floor, [name])
+        registerCollision(floor, [name], false)
 
         const ceil = new THREE.Mesh(new THREE.BoxGeometry(w, 0.15, h), ceilM)
         ceil.position.set(x, WALL_HEIGHT + 0.075, z)
         ceil.name = `ceiling_${name}`
-        registerCollision(ceil, [name])
+        registerCollision(ceil, [name], false)
 
         // Walls AT the boundary (not inset) so adjacent rooms truly share them
         const wallArgs = [
@@ -224,31 +231,18 @@ export function generateMap(scene, renderer = null) {
 
         const roomLight = new THREE.PointLight(lightColor, baseI, lightRange, 1.5)
         roomLight.position.set(x, WALL_HEIGHT - 0.3, z)
+        roomLight.castShadow = false
         roomLight.userData.baseIntensity     = baseI
         roomLight.userData.flickerMultiplier = 1.0
         scene.add(roomLight)
         tagRooms(roomLight, [name])
 
         const flickerStrength = isHorrorRoom ? 0.9 : 0.5
-        const flicker = () => {
-            const decay = Math.random() > 0.95 ? 0.15 : 1.0
-            const mult  = roomLight.userData.flickerMultiplier ?? 1.0
-            roomLight.intensity =
-                roomLight.userData.baseIntensity * mult * decay *
-                (1 - flickerStrength + Math.random() * flickerStrength)
-            setTimeout(flicker, 80 + Math.random() * 220)
-        }
-        flicker()
+        roomLight.userData.flickerStrength = flickerStrength
+        // removed internal flicker loop — now handled in engine.js update()
         roomLights.push({ light: roomLight, name })
 
-        const fillBase  = baseI * 0.4
-        const fillLight = new THREE.PointLight(lightColor, fillBase, lightRange * 0.8, 2)
-        fillLight.position.set(x + w * 0.3, WALL_HEIGHT * 0.6, z - h * 0.3)
-        fillLight.userData.baseIntensity     = fillBase
-        fillLight.userData.flickerMultiplier = 1.0
-        scene.add(fillLight)
-        tagRooms(fillLight, [name])
-        roomLights.push({ light: fillLight, name: `${name}_fill` })
+        // Keep room lighting to one non-shadowed point light per room for lower frame cost.
     })
 
     // Extraction in Surgical Prep
@@ -260,11 +254,17 @@ export function generateMap(scene, renderer = null) {
 
     // Hiding props — curtains, lockers, gurneys/crates
     spawnHidingProps(scene, collisionMeshes, mats, doors, lockers, tagRooms)
+    _pruneSpawnBlockers(scene, collisionMeshes, lockers)
+
+    // Health pickups — glowing green crosses scattered in rooms
+    const healthPickups = []
+    _spawnHealthPickups(scene, healthPickups, doors, tagRooms)
 
     console.log(
         `[MapSystem] ${MAP_BLUEPRINT.length} rooms | ` +
         `${collisionMeshes.length} collision meshes | ` +
-        `${doors.length} doors | ${lockers.length} lockers | ${roomLights.length} lights`
+        `${doors.length} doors | ${lockers.length} lockers | ` +
+        `${healthPickups.length} health pickups | ${roomLights.length} lights`
     )
 
     return {
@@ -273,8 +273,10 @@ export function generateMap(scene, renderer = null) {
         doors,
         ventZones,
         lockers,
+        healthPickups,
         rooms: MAP_BLUEPRINT.map(r => ({ name: r.name, x: r.x, z: r.z, w: r.w, h: r.h })),
-        roomTagged,
+        roomObjects,
+        allRoomObjects,
         spawnHunter:      SPAWN_HUNTER.clone(),
         spawnPrey:        SPAWN_PREY.clone(),
         extractionCenter: new THREE.Vector3(extractionRoom?.x ?? 14, 0, extractionRoom?.z ?? -14),
@@ -295,8 +297,8 @@ function _buildWallSegment(scene, collisionMeshes, mats, mat, opts, doors = null
         const mesh = new THREE.Mesh(geo, mat)
         mesh.position.set(cx, height / 2, cz)
         mesh.name          = name
-        mesh.castShadow    = true
-        mesh.receiveShadow = true
+        mesh.castShadow    = false
+        mesh.receiveShadow = false // Walls don't need to receive shadows in this lighting style
         scene.add(mesh)
         collisionMeshes.push({ mesh, box: new THREE.Box3().setFromObject(mesh) })
         if (rooms && tagRooms) tagRooms(mesh, rooms)
@@ -317,8 +319,8 @@ function _buildWallSegment(scene, collisionMeshes, mats, mat, opts, doors = null
             mesh.position.set(cx, height / 2, cz + side * (halfLength / 2 + DOOR_WIDTH / 2))
         }
         mesh.name          = `${name}_seg${side > 0 ? 'R' : 'L'}`
-        mesh.castShadow    = true
-        mesh.receiveShadow = true
+        mesh.castShadow    = false
+        mesh.receiveShadow = false
         scene.add(mesh)
         collisionMeshes.push({ mesh, box: new THREE.Box3().setFromObject(mesh) })
         if (rooms && tagRooms) tagRooms(mesh, rooms)
@@ -335,7 +337,8 @@ function _buildWallSegment(scene, collisionMeshes, mats, mat, opts, doors = null
     })
     const lintel = new THREE.Mesh(lintelGeo, lintelMat)
     lintel.position.set(cx, height - 0.15, cz)
-    lintel.castShadow = true
+    lintel.castShadow = false
+    lintel.receiveShadow = false
     scene.add(lintel)
     if (rooms && tagRooms) tagRooms(lintel, rooms)
 
@@ -347,26 +350,72 @@ function _buildWallSegment(scene, collisionMeshes, mats, mat, opts, doors = null
         const doorMesh = new THREE.Mesh(doorGeo, mats.door)
         doorMesh.position.set(cx, DOOR_HEIGHT / 2, cz)
         doorMesh.castShadow    = true
-        doorMesh.receiveShadow = true
-        scene.add(doorMesh)
-        if (rooms && tagRooms) tagRooms(doorMesh, rooms)
-
+        doorMesh.receiveShadow = false
         const doorCollider = { mesh: doorMesh, box: new THREE.Box3().setFromObject(doorMesh) }
         collisionMeshes.push(doorCollider)
 
-        doors.push({
+        const door = {
             mesh:     doorMesh,
             collider: doorCollider,
             position: new THREE.Vector3(cx, DOOR_HEIGHT / 2, cz),
             isOpen:   false,
             rooms:    rooms ?? [],
-        })
+        }
+        doorMesh.userData.doorState = door
+        scene.add(doorMesh)
+        if (rooms && tagRooms) tagRooms(doorMesh, rooms)
+
+        doors.push(door)
     }
 }
 
 // ─────────────────────────────────────────────────────────────────
 // HIDING PROPS — curtains (no collision), lockers (trigger), gurneys/crates (AABB)
 // ─────────────────────────────────────────────────────────────────
+function _isNearSpawn(box, radius = 5.2) {
+    const spawns = [SPAWN_HUNTER, SPAWN_PREY]
+    for (const spawn of spawns) {
+        const closestX = Math.max(box.min.x, Math.min(spawn.x, box.max.x))
+        const closestZ = Math.max(box.min.z, Math.min(spawn.z, box.max.z))
+        const dx = closestX - spawn.x
+        const dz = closestZ - spawn.z
+        if (Math.sqrt(dx * dx + dz * dz) < radius) return true
+    }
+    return false
+}
+
+function _markSpawnBlocker(mesh, root = mesh) {
+    mesh.userData.spawnBlocker = true
+    mesh.userData.spawnRoot = root
+}
+
+function _pruneSpawnBlockers(scene, collisionMeshes, lockers) {
+    const removedRoots = new Set()
+    for (let i = collisionMeshes.length - 1; i >= 0; i--) {
+        const entry = collisionMeshes[i]
+        const mesh = entry.mesh
+        if (!mesh?.userData?.spawnBlocker) continue
+        entry.box.setFromObject(mesh)
+        if (!_isNearSpawn(entry.box)) continue
+
+        const root = mesh.userData.spawnRoot ?? mesh
+        if (!removedRoots.has(root)) {
+            root.parent?.remove(root)
+            scene.remove(root)
+            removedRoots.add(root)
+        }
+        collisionMeshes.splice(i, 1)
+    }
+
+    for (let i = lockers.length - 1; i >= 0; i--) {
+        if (!lockers[i].mesh.parent) lockers.splice(i, 1)
+    }
+
+    if (removedRoots.size) {
+        console.log(`[MapSystem] Removed ${removedRoots.size} spawn-blocking props`)
+    }
+}
+
 export function spawnHidingProps(scene, collisionMeshes, mats, doors, lockers, tagRooms) {
     // Returns true if (px, pz) is at least DOOR_SAFE_RADIUS from every door
     const farFromDoors = (px, pz) => {
@@ -377,8 +426,8 @@ export function spawnHidingProps(scene, collisionMeshes, mats, doors, lockers, t
         return true
     }
     const farFromSpawns = (px, pz) => {
-        if (Math.abs(px - SPAWN_HUNTER.x) < 2.5 && Math.abs(pz - SPAWN_HUNTER.z) < 2.5) return false
-        if (Math.abs(px - SPAWN_PREY.x)   < 2.5 && Math.abs(pz - SPAWN_PREY.z)   < 2.5) return false
+        if (Math.abs(px - SPAWN_HUNTER.x) < 4.0 && Math.abs(pz - SPAWN_HUNTER.z) < 4.0) return false
+        if (Math.abs(px - SPAWN_PREY.x)   < 4.0 && Math.abs(pz - SPAWN_PREY.z)   < 4.0) return false
         return true
     }
 
@@ -484,8 +533,9 @@ function _buildLocker(scene, collisionMeshes, mats, pos, faceYaw, roomName, lock
     // Body
     const bodyGeo = new THREE.BoxGeometry(0.85, 2.0, 0.55)
     const body    = new THREE.Mesh(bodyGeo, mats.locker)
-    body.castShadow = true
-    body.receiveShadow = true
+    body.castShadow = false
+    body.receiveShadow = false
+    _markSpawnBlocker(body, group)
     body.position.set(0, 0, 0)
     group.add(body)
 
@@ -493,6 +543,8 @@ function _buildLocker(scene, collisionMeshes, mats, pos, faceYaw, roomName, lock
     const doorGeo = new THREE.BoxGeometry(0.78, 1.85, 0.04)
     const door    = new THREE.Mesh(doorGeo, mats.lockerDoor)
     door.position.set(0, 0, -0.28)
+    door.castShadow = false
+    door.receiveShadow = false
     group.add(door)
 
     // Vent slats
@@ -500,6 +552,8 @@ function _buildLocker(scene, collisionMeshes, mats, pos, faceYaw, roomName, lock
     for (let i = 0; i < 5; i++) {
         const slat = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.04, 0.01), slatMat)
         slat.position.set(0, 0.6 - i * 0.12, -0.30)
+        slat.castShadow = false
+        slat.receiveShadow = false
         group.add(slat)
     }
 
@@ -533,7 +587,7 @@ function _buildCurtain(scene, mats, px, pz, roomName, tagRooms) {
     const mesh = new THREE.Mesh(geo, mats.curtain)
     mesh.position.set(px, h / 2, pz)
     mesh.rotation.y = Math.random() * Math.PI
-    mesh.castShadow = true
+    mesh.castShadow = false
     mesh.receiveShadow = false
     scene.add(mesh)
     if (tagRooms) tagRooms(mesh, [roomName])
@@ -544,6 +598,8 @@ function _buildCurtain(scene, mats, px, pz, roomName, tagRooms) {
     const rail = new THREE.Mesh(railGeo, railMat)
     rail.position.set(px, h + 0.05, pz)
     rail.rotation.y = mesh.rotation.y
+    rail.castShadow = false
+    rail.receiveShadow = false
     scene.add(rail)
     if (tagRooms) tagRooms(rail, [roomName])
 }
@@ -557,13 +613,15 @@ function _buildGurney(scene, collisionMeshes, mats, px, pz, roomName, tagRooms) 
     // Frame top
     const frame = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.08, 0.85), mats.gurney)
     frame.position.set(0, 0.78, 0)
-    frame.castShadow = true
+    frame.castShadow = false
+    frame.receiveShadow = false
     group.add(frame)
 
     // Padded mattress
     const pad = new THREE.Mesh(new THREE.BoxGeometry(1.95, 0.1, 0.78), mats.gurneyPad)
     pad.position.set(0, 0.86, 0)
-    pad.castShadow = true
+    pad.castShadow = false
+    pad.receiveShadow = false
     group.add(pad)
 
     // Legs
@@ -572,6 +630,8 @@ function _buildGurney(scene, collisionMeshes, mats, px, pz, roomName, tagRooms) 
     for (const [lx, lz] of legPos) {
         const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.78, 6), legMat)
         leg.position.set(lx, 0.39, lz)
+        leg.castShadow = false
+        leg.receiveShadow = false
         group.add(leg)
     }
 
@@ -579,6 +639,7 @@ function _buildGurney(scene, collisionMeshes, mats, px, pz, roomName, tagRooms) 
 
     // AABB collider — use the frame for collision
     const colliderBox = new THREE.Box3().setFromObject(frame)
+    _markSpawnBlocker(frame, group)
     collisionMeshes.push({ mesh: frame, box: colliderBox })
     if (tagRooms) {
         tagRooms(group, [roomName])
@@ -592,8 +653,9 @@ function _buildCrate(scene, collisionMeshes, mats, px, pz, roomName, tagRooms) {
     const mesh = new THREE.Mesh(geo, mats.crate)
     mesh.position.set(px, size / 2, pz)
     mesh.rotation.y = Math.random() * Math.PI
-    mesh.castShadow    = true
-    mesh.receiveShadow = true
+    mesh.castShadow    = false
+    mesh.receiveShadow = false
+    _markSpawnBlocker(mesh)
     scene.add(mesh)
     collisionMeshes.push({ mesh, box: new THREE.Box3().setFromObject(mesh) })
     if (tagRooms) tagRooms(mesh, [roomName])
@@ -623,6 +685,7 @@ function _addExtractionZone(scene, x, z, tagRooms) {
 
     const gl = new THREE.PointLight('#00ff44', 2.5, 10)
     gl.position.set(x, 3.5, z)
+    gl.castShadow = false
     scene.add(gl)
     if (tagRooms) tagRooms(gl, ['Surgical Prep'])
 }
@@ -692,8 +755,9 @@ function _addDebrisClusters(scene, collisionMeshes, tagRooms) {
                 )
                 mesh.rotation.y = Math.random() * Math.PI
                 mesh.rotation.z = (Math.random() - 0.5) * 0.25
-                mesh.castShadow    = true
-                mesh.receiveShadow = true
+                mesh.castShadow    = false // Debris clusters too small for shadows
+                mesh.receiveShadow = false
+                _markSpawnBlocker(mesh)
                 scene.add(mesh)
                 collisionMeshes.push({ mesh, box: new THREE.Box3().setFromObject(mesh) })
                 if (tagRooms) tagRooms(mesh, [room.name])
@@ -702,4 +766,71 @@ function _addDebrisClusters(scene, collisionMeshes, tagRooms) {
         }
     }
     console.log(`[MapSystem] ${placed} debris clusters placed`)
+}
+
+// ─────────────────────────────────────────────────────────────────
+// HEALTH PICKUPS — glowing green crosses, 1-2 per room
+// ─────────────────────────────────────────────────────────────────
+function _spawnHealthPickups(scene, healthPickups, doors, tagRooms) {
+    const crossMat = new THREE.MeshStandardMaterial({
+        color: '#00ff66', emissive: '#00ff44', emissiveIntensity: 0.8,
+        roughness: 0.3, metalness: 0.2, transparent: true, opacity: 0.9,
+    })
+
+    const farFromDoors = (px, pz) => {
+        for (const d of doors) {
+            const dx = px - d.position.x, dz = pz - d.position.z
+            if (Math.sqrt(dx * dx + dz * dz) < 2.5) return false
+        }
+        return true
+    }
+
+    let count = 0
+    for (const room of MAP_BLUEPRINT) {
+        if (room.type !== 'room') continue
+        const numPickups = 1 + Math.floor(Math.random() * 2) // 1-2 per room
+        for (let i = 0; i < numPickups; i++) {
+            const px = room.x + (Math.random() - 0.5) * (room.w - 4)
+            const pz = room.z + (Math.random() - 0.5) * (room.h - 4)
+            if (!farFromDoors(px, pz)) continue
+
+            const group = new THREE.Group()
+            group.position.set(px, 0.6, pz)
+
+            // Vertical bar of the cross
+            const vBar = new THREE.Mesh(
+                new THREE.BoxGeometry(0.12, 0.4, 0.12),
+                crossMat
+            )
+            group.add(vBar)
+
+            // Horizontal bar of the cross
+            const hBar = new THREE.Mesh(
+                new THREE.BoxGeometry(0.4, 0.12, 0.12),
+                crossMat
+            )
+            hBar.position.y = 0.06
+            group.add(hBar)
+
+            // Glow light
+            const glow = new THREE.PointLight('#00ff66', 1.5, 4)
+            glow.position.set(0, 0.2, 0)
+            glow.castShadow = false
+            group.add(glow)
+
+            scene.add(group)
+            if (tagRooms) tagRooms(group, [room.name])
+
+            healthPickups.push({
+                mesh: group,
+                position: new THREE.Vector3(px, 0.6, pz),
+                roomName: room.name,
+                collected: false,
+                phaseOffset: Math.random() * Math.PI * 2
+            })
+            count++
+        }
+    }
+
+    console.log(`[MapSystem] ${count} health pickups placed`)
 }

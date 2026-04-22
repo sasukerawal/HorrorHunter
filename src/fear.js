@@ -9,8 +9,8 @@ export class FearSystem {
         this._noiseTimer = 0
     }
 
-    /** Called each frame with optional manual BPM override (debug slider) */
-    update(dt, manualBPM = null) {
+    /** Called each frame with optional manual BPM override (debug slider) and optional biometric BPM */
+    update(dt, manualBPM = null, biometricBPM = null) {
         this._noiseTimer += dt
         if (this._noiseTimer > 0.4) {
             this._bpmNoise = (Math.random() - 0.5) * 10
@@ -19,6 +19,10 @@ export class FearSystem {
 
         if (manualBPM !== null) {
             this.currentBPM = manualBPM
+        } else if (biometricBPM !== null) {
+            // Blend biometric BPM with proximity surge for immersive feel
+            const proximitySurge = Math.max(0, 1 - this.hunterDistance / 12) * 30
+            this.currentBPM = biometricBPM + proximitySurge + this._bpmNoise * 0.5
         } else {
             // Proximity spike: closer hunter → higher BPM
             const proximitySurge = Math.max(0, 1 - this.hunterDistance / 12) * 60

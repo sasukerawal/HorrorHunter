@@ -11,7 +11,10 @@ export class NetGun {
         this.rateOfFire = 0.6
         this.accuracy = 1.0
         this.peerPlayerId = null
+        this.preyMeshes = []       // array of prey meshes for multi-player hitscan
         this._activeNets = [] // animated net projectiles
+        this._raycaster = new THREE.Raycaster()
+        this._raycastTargets = []
 
         // Bloom (driven by Prey's broadcast fear; expands the hitscan jitter cone)
         // Bloom = baseBloom + (fear * maxJitter) — applied as random offset to the ray direction
@@ -37,7 +40,8 @@ export class NetGun {
     }
 
     setPeerPlayerId(id) { this.peerPlayerId = id }
-    setPreyMesh(mesh) { this.preyMesh = mesh }
+    setPreyMesh(mesh) { this.preyMesh = mesh; this.preyMeshes = [mesh] }
+    setPreyMeshes(meshes) { this.preyMeshes = meshes; this.preyMesh = meshes[0] ?? null }
     setAccuracy(accuracy) { this.accuracy = accuracy }
     setPeerFear(f)         { this.peerFear = Math.max(0, Math.min(1, f)) }
     setPeerPhasing(p)      { this.peerIsPhasing = !!p }
@@ -61,12 +65,18 @@ export class NetGun {
         dir.normalize()
 
         // ---- Hitscan raycasting ----
-        const raycaster = new THREE.Raycaster(origin, dir, 0, 30)
-        const meshes = this.engine.collisionMeshes.map(c => c.mesh)
-        // Phasing prey is intangible — net cannot tag them
-        if (this.preyMesh && this.preyMesh.visible && !this.peerIsPhasing) meshes.push(this.preyMesh)
+        const meshes = this.engine.getCollisionMeshList()
+        this._raycastTargets.length = 0
+        for (const mesh of meshes) this._raycastTargets.push(mesh)
+        // Add all visible, non-phasing prey meshes
+        for (const pm of this.preyMeshes) {
+            if (pm && pm.visible && !this.peerIsPhasing) this._raycastTargets.push(pm)
+        }
 
-        const hits = raycaster.intersectObjects(meshes, true)
+        this._raycaster.set(origin, dir)
+        this._raycaster.near = 0
+        this._raycaster.far = 30
+        const hits = this._raycaster.intersectObjects(this._raycastTargets, true)
 
         const endpoint = hits.length > 0
             ? hits[0].point.clone()
@@ -78,11 +88,14 @@ export class NetGun {
         // ---- Hitscan result ----
         let hitData = null
         if (hits.length > 0) {
-            // Check if the hit object is the prey mesh or a child of it
+            // Check if the hit object is a prey mesh or a child of one
             let hitPrey = false
             let obj = hits[0].object
             while (obj) {
-                if (obj === this.preyMesh) { hitPrey = true; break; }
+                for (const pm of this.preyMeshes) {
+                    if (obj === pm) { hitPrey = true; break }
+                }
+                if (hitPrey) break
                 obj = obj.parent
             }
             hitData = {
