@@ -1,0 +1,11 @@
+/node_modules
+/dist
+/source
+*.log
+.DS_Store
+.env
+.vscode/
+.idea/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

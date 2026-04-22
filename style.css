@@ -1,0 +1,704 @@
+/* style.css — Bio-Horror Retro-Horror Aesthetic */
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Creepster&display=swap');
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --red: #ff003c;
+  --dark-red: #8b0000;
+  --cyan: #00ffcc;
+  --bg: #050505;
+  --panel-bg: rgba(0, 0, 0, 0.78);
+  --border: rgba(255, 0, 60, 0.4);
+  --font-mono: 'Share Tech Mono', monospace;
+  --font-horror: 'Creepster', cursive;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: #e0e0e0;
+  font-family: var(--font-mono);
+  user-select: none;
+}
+
+/* ==================== CANVAS ==================== */
+#game-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* ==================== HIT FLASH ==================== */
+#hit-flash {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at center, rgba(255, 0, 0, 0.6) 0%, transparent 70%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.1s;
+  z-index: 80;
+}
+
+/* ==================== LOBBY ==================== */
+#ui-overlay {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 30%, #1a0008 0%, #000000 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.lobby-container {
+  text-align: center;
+  max-width: 480px;
+  width: 90%;
+  padding: 40px 32px;
+  background: rgba(5, 0, 10, 0.9);
+  border: 1px solid var(--border);
+  box-shadow: 0 0 60px rgba(255, 0, 60, 0.15), inset 0 0 40px rgba(255, 0, 60, 0.05);
+  border-radius: 4px;
+}
+
+/* Glitch title (CSS-only glitch via text-shadow) */
+.glitch-title {
+  font-family: var(--font-horror);
+  font-size: clamp(2.8rem, 8vw, 5rem);
+  color: #ff003c;
+  text-shadow: 2px 0 #00ffcc, -2px 0 #ff003c;
+  letter-spacing: 6px;
+  animation: glitch 2.5s infinite steps(1);
+  margin-bottom: 4px;
+}
+
+@keyframes glitch {
+  0% {
+    text-shadow: 2px 0 #00ffcc, -2px 0 #ff003c;
+    clip-path: none;
+  }
+
+  5% {
+    text-shadow: -2px 0 #ff00cc, 2px 0 #00ff00;
+    clip-path: inset(20% 0 60% 0);
+    transform: translate(-2px);
+  }
+
+  6% {
+    text-shadow: 2px 0 #00ffcc, -2px 0 #ff003c;
+    clip-path: none;
+    transform: none;
+  }
+
+  20% {
+    text-shadow: 3px 0 #ff00cc, -3px 0 #00ffcc;
+    clip-path: inset(60% 0 10% 0);
+    transform: translate(3px);
+  }
+
+  21% {
+    text-shadow: 2px 0 #00ffcc, -2px 0 #ff003c;
+    clip-path: none;
+    transform: none;
+  }
+
+  100% {
+    text-shadow: 2px 0 #00ffcc, -2px 0 #ff003c;
+    clip-path: none;
+  }
+}
+
+.subtitle {
+  font-size: 0.75rem;
+  color: #666;
+  letter-spacing: 3px;
+  margin-bottom: 36px;
+  text-transform: uppercase;
+}
+
+.lobby-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: center;
+}
+
+.divider {
+  font-size: 0.75rem;
+  color: #555;
+  letter-spacing: 2px;
+}
+
+.join-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+input#code-input {
+  flex: 1;
+  padding: 12px 16px;
+  background: #0a0010;
+  border: 1px solid var(--border);
+  color: var(--cyan);
+  font-family: var(--font-mono);
+  font-size: 1.2rem;
+  letter-spacing: 6px;
+  text-align: center;
+  text-transform: uppercase;
+  outline: none;
+  border-radius: 2px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+input#code-input:focus {
+  border-color: var(--cyan);
+  box-shadow: 0 0 10px rgba(0, 255, 204, 0.2);
+}
+
+.btn {
+  padding: 12px 24px;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  letter-spacing: 2px;
+  cursor: pointer;
+  border: none;
+  border-radius: 2px;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.btn-host {
+  background: var(--red);
+  color: #fff;
+  width: 100%;
+  box-shadow: 0 0 20px rgba(255, 0, 60, 0.3);
+}
+
+.btn-host:hover {
+  background: #cc0030;
+  box-shadow: 0 0 30px rgba(255, 0, 60, 0.5);
+  transform: translateY(-1px);
+}
+
+.btn-join {
+  background: #0a2020;
+  color: var(--cyan);
+  border: 1px solid var(--cyan);
+  box-shadow: 0 0 14px rgba(0, 255, 204, 0.15);
+}
+
+.btn-join:hover {
+  background: #0d3030;
+  box-shadow: 0 0 24px rgba(0, 255, 204, 0.3);
+  transform: translateY(-1px);
+}
+
+#room-code-panel {
+  margin-top: 24px;
+  padding: 18px;
+  border: 1px solid rgba(0, 255, 204, 0.3);
+  background: rgba(0, 255, 204, 0.04);
+  border-radius: 2px;
+}
+
+.code-label {
+  font-size: 0.65rem;
+  color: #666;
+  letter-spacing: 4px;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+#room-code {
+  font-family: var(--font-mono);
+  font-size: 3rem;
+  color: var(--cyan);
+  letter-spacing: 12px;
+  text-shadow: 0 0 20px rgba(0, 255, 204, 0.6);
+  transition: opacity 0.3s;
+}
+
+.code-hint {
+  font-size: 0.65rem;
+  color: #555;
+  margin-top: 6px;
+}
+
+.status-msg {
+  margin-top: 20px;
+  font-size: 0.8rem;
+  color: #999;
+  min-height: 20px;
+  letter-spacing: 1px;
+}
+
+/* ==================== HUD ==================== */
+#hud {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+}
+
+#hud-topleft {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  padding: 10px 16px;
+  border-radius: 2px;
+  box-shadow: 0 0 20px rgba(255, 0, 60, 0.1);
+}
+
+#hud-timer {
+  font-size: 2rem;
+  color: var(--red);
+  letter-spacing: 4px;
+  text-shadow: 0 0 10px rgba(255, 0, 60, 0.4);
+}
+
+#hud-role {
+  font-size: 0.7rem;
+  letter-spacing: 3px;
+  margin-top: 2px;
+  color: #aaa;
+}
+
+#hud-topright {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  font-size: 0.75rem;
+  color: #888;
+  letter-spacing: 1px;
+}
+
+#fear-panel {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+#hud-bpm {
+  font-size: 0.75rem;
+  color: var(--red);
+  letter-spacing: 2px;
+  text-shadow: 0 0 8px rgba(255, 0, 60, 0.5);
+}
+
+#fear-graph {
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  display: block;
+}
+
+/* ==================== CROSSHAIR ==================== */
+#crosshair {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.08s linear, opacity 0.12s linear;
+  transform-origin: center center;
+}
+
+.ch-h,
+.ch-v {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 1px;
+  box-shadow: 0 0 4px rgba(0, 255, 204, 0.6);
+}
+
+.ch-h {
+  width: 14px;
+  height: 1.5px;
+}
+
+.ch-v {
+  width: 1.5px;
+  height: 14px;
+}
+
+/* ==================== DEBUG PANEL ==================== */
+#debug-panel {
+  position: fixed;
+  bottom: 20px;
+  left: 20px;
+  background: var(--panel-bg);
+  border: 1px solid #333;
+  padding: 10px 14px;
+  font-size: 0.7rem;
+  color: #888;
+  border-radius: 2px;
+  pointer-events: all;
+}
+
+#debug-panel label {
+  display: block;
+  margin-bottom: 6px;
+}
+
+#bpm-slider {
+  width: 160px;
+  accent-color: var(--red);
+}
+
+/* ==================== GAME OVER ==================== */
+#gameover-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.gameover-box {
+  text-align: center;
+  padding: 48px 40px;
+  background: #0a0005;
+  border: 1px solid var(--border);
+  box-shadow: 0 0 80px rgba(255, 0, 60, 0.2);
+  border-radius: 4px;
+  animation: fadeIn 0.5s ease;
+}
+
+#gameover-msg {
+  font-family: var(--font-horror);
+  font-size: 2.5rem;
+  letter-spacing: 4px;
+  text-shadow: 0 0 20px currentColor;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ==================== UTILITIES ==================== */
+.hidden {
+  display: none !important;
+}
+
+/* Scan-line overlay for immersion */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(0deg,
+      rgba(0, 0, 0, 0.04) 0px,
+      rgba(0, 0, 0, 0.04) 1px,
+      transparent 1px,
+      transparent 3px);
+  pointer-events: none;
+  z-index: 999;
+}
+
+/* ==================== VIGNETTE — opacity driven by Prey fear ==================== */
+#vignette {
+  --vignette-opacity: 0.55;
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at center,
+      transparent 38%,
+      rgba(0, 0, 0, var(--vignette-opacity)) 100%);
+  pointer-events: none;
+  z-index: 60;
+  transition: background 0.12s linear;
+}
+
+#vignette.high {
+  background: radial-gradient(ellipse at center,
+      transparent 22%,
+      rgba(40, 0, 0, calc(var(--vignette-opacity) * 0.6)) 55%,
+      rgba(0, 0, 0, var(--vignette-opacity)) 100%);
+}
+
+/* ==================== FEAR GLITCH (Chromatic Aberration) ==================== */
+.fear-state {
+  filter: sepia(0.2) contrast(1.1) saturate(1.2) !important;
+}
+
+.fear-glitch {
+  filter: contrast(1.2) saturate(1.5) !important;
+  animation: chromatic-shift 0.15s infinite steps(2) !important;
+}
+
+.high-panic {
+  /* Combine jitter movement + chromatic glitch + greyscale desaturation */
+  animation: jitter 0.1s infinite, chromatic-shift 0.15s infinite steps(2) !important;
+  filter: saturate(0.25) contrast(1.25) brightness(0.85) !important;
+}
+
+@keyframes jitter {
+  0% {
+    transform: translate(1px, 1px);
+  }
+
+  50% {
+    transform: translate(-1px, -2px);
+  }
+
+  100% {
+    transform: translate(2px, 1px);
+  }
+}
+
+@keyframes chromatic-shift {
+  0% {
+    filter: contrast(1.2) saturate(1.5);
+  }
+
+  25% {
+    filter: contrast(1.3) saturate(1.6) hue-rotate(2deg);
+    text-shadow: 2px 0 red, -2px 0 blue;
+  }
+
+  50% {
+    filter: contrast(1.15) saturate(1.4) hue-rotate(-2deg);
+    text-shadow: -1px 0 red, 1px 0 blue;
+  }
+
+  75% {
+    filter: contrast(1.25) saturate(1.5) hue-rotate(1deg);
+  }
+
+  100% {
+    filter: contrast(1.2) saturate(1.5);
+    text-shadow: 2px 0 red, -2px 0 blue;
+  }
+}
+
+/* ==================== INTERACTION PROMPT ==================== */
+#interact-prompt {
+  position: fixed;
+  bottom: 45%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--cyan);
+  letter-spacing: 3px;
+  text-shadow: 0 0 8px rgba(0, 255, 204, 0.5);
+  pointer-events: none;
+  z-index: 55;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+#interact-prompt.visible {
+  opacity: 1;
+}
+
+/* ==================== EXTRACTION HUD ==================== */
+#extraction-hud {
+  position: fixed;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: #00ff44;
+  letter-spacing: 3px;
+  text-shadow: 0 0 10px rgba(0, 255, 68, 0.6);
+  pointer-events: none;
+  z-index: 55;
+  text-align: center;
+}
+
+.extraction-bar {
+  width: 180px;
+  height: 6px;
+  border: 1px solid rgba(0, 255, 68, 0.5);
+  margin: 6px auto 0;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.extraction-fill {
+  height: 100%;
+  background: #00ff44;
+  width: 0%;
+  transition: width 0.1s;
+  box-shadow: 0 0 8px rgba(0, 255, 68, 0.6);
+}
+
+/* ==================== ABILITY PANEL (bottom-left) ==================== */
+#ability-panel {
+  position: fixed;
+  bottom: 20px;
+  left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  z-index: 55;
+  pointer-events: none;
+}
+
+#flashlight-status {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 2px;
+  color: #ffeeaa;
+  text-shadow: 0 0 8px rgba(255, 200, 100, 0.5);
+  background: var(--panel-bg);
+  border: 1px solid rgba(255, 200, 100, 0.3);
+  padding: 6px 10px;
+  border-radius: 2px;
+}
+
+#flashlight-status.off {
+  color: #666;
+  border-color: rgba(80, 80, 80, 0.5);
+  text-shadow: none;
+}
+
+.meter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  border-radius: 2px;
+  min-width: 180px;
+}
+
+.meter-label {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 2px;
+  color: #aaa;
+  text-transform: uppercase;
+}
+
+.meter-track {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  width: 100%;
+  transition: width 0.12s linear;
+}
+
+.meter-fill.stamina {
+  background: linear-gradient(90deg, #44ff88, #88ffaa);
+  box-shadow: 0 0 6px rgba(68, 255, 136, 0.5);
+}
+
+.meter-fill.phase {
+  background: linear-gradient(90deg, #cc44ff, #ff88ff);
+  box-shadow: 0 0 6px rgba(204, 68, 255, 0.5);
+}
+
+#phase-wrap.active .meter-label {
+  color: #ff88ff;
+  animation: phasePulse 0.6s infinite alternate;
+}
+
+#phase-wrap.locked .meter-fill.phase {
+  background: linear-gradient(90deg, #553355, #774477);
+  box-shadow: none;
+}
+
+#phase-wrap.locked .meter-label {
+  color: #888;
+}
+
+@keyframes phasePulse {
+  from { text-shadow: 0 0 4px rgba(255, 136, 255, 0.3); }
+  to   { text-shadow: 0 0 12px rgba(255, 136, 255, 0.9); }
+}
+
+/* ==================== PHASE FILTER ON CANVAS ==================== */
+#game-canvas.phase-active {
+  filter: hue-rotate(180deg) saturate(1.4) brightness(0.9) !important;
+  animation: phaseGhost 0.4s infinite alternate !important;
+}
+
+@keyframes phaseGhost {
+  from { filter: hue-rotate(160deg) saturate(1.3) brightness(0.85); }
+  to   { filter: hue-rotate(200deg) saturate(1.6) brightness(1.0); }
+}
+
+/* ==================== EXTRACTION DIRECTIONAL ARROW ==================== */
+#extraction-arrow {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 4rem;
+  color: #00ff44;
+  text-shadow: 0 0 16px rgba(0, 255, 68, 0.8), 0 0 32px rgba(0, 255, 68, 0.4);
+  pointer-events: none;
+  z-index: 70;
+  font-family: var(--font-mono);
+  animation: arrowPulse 0.8s infinite alternate;
+  /* The arrow points UP at 0deg; main.js rotates it toward extraction */
+  transform-origin: center center;
+  margin-top: -120px;
+}
+
+@keyframes arrowPulse {
+  from { opacity: 0.55; }
+  to   { opacity: 1.0; text-shadow: 0 0 24px rgba(0, 255, 68, 1), 0 0 48px rgba(0, 255, 68, 0.6); }
+}
+
+/* ==================== HIDE-IN-LOCKER HINT ==================== */
+#hide-hint {
+  position: fixed;
+  bottom: 38%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: #ffaa44;
+  letter-spacing: 3px;
+  text-shadow: 0 0 8px rgba(255, 170, 68, 0.6);
+  pointer-events: none;
+  z-index: 55;
+  opacity: 0;
+  transition: opacity 0.18s;
+}
+
+#hide-hint.visible {
+  opacity: 1;
+}

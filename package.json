@@ -1,0 +1,21 @@
+{
+  "name": "bio-horror",
+  "version": "1.0.0",
+  "description": "2-Player Multiplayer Horror FPS with Biometric Fear System",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "start": "node server/index.cjs"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.7.5",
+    "three": "^0.163.0"
+  },
+  "devDependencies": {
+    "express": "^4.18.3",
+    "sharp": "^0.34.5",
+    "socket.io": "^4.7.5",
+    "vite": "^5.2.0"
+  }
+}

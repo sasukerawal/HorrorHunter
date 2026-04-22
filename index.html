@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BIO-HORROR — 2-Player FPS</title>
+  <meta name="description" content="2-player multiplayer horror FPS with Biometric Fear System" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Creepster&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+
+  <!-- Game Canvas -->
+  <canvas id="game-canvas"></canvas>
+
+  <!-- Vignette -->
+  <div id="vignette"></div>
+
+  <!-- Hit Flash Overlay -->
+  <div id="hit-flash"></div>
+
+  <!-- Interaction Prompt -->
+  <div id="interact-prompt">[E] OPEN DOOR</div>
+
+  <!-- Hide-in-locker hint (Prey context) -->
+  <div id="hide-hint">[E] HIDE IN LOCKER</div>
+
+  <!-- Extraction directional arrow (Prey, when timer expires) -->
+  <div id="extraction-arrow" class="hidden">▲</div>
+
+  <!-- Extraction HUD (Prey only, shown when in zone) -->
+  <div id="extraction-hud" class="hidden">
+    EXTRACTING…
+    <div class="extraction-bar">
+      <div class="extraction-fill" id="extraction-fill"></div>
+    </div>
+  </div>
+
+  <!-- ======================== LOBBY UI ======================== -->
+  <div id="ui-overlay">
+    <div class="lobby-container">
+      <h1 class="glitch-title" data-text="BIO-HORROR">BIO-HORROR</h1>
+      <p class="subtitle">2-Player Multiplayer Fear FPS</p>
+
+      <div class="lobby-actions">
+        <button id="btn-host" class="btn btn-host">🔦 HOST GAME</button>
+        <div class="divider">— or —</div>
+        <div class="join-row">
+          <input id="code-input" type="text" maxlength="6" placeholder="ENTER CODE" spellcheck="false" />
+          <button id="btn-join" class="btn btn-join">👻 JOIN</button>
+        </div>
+      </div>
+
+      <div id="room-code-panel" style="display:none">
+        <p class="code-label">ROOM CODE</p>
+        <div id="room-code" class="room-code">----</div>
+        <p class="code-hint">Share this code with your opponent</p>
+      </div>
+
+      <p id="status-msg" class="status-msg">Choose to Host or Join a game</p>
+
+      <div id="loading-bar" style="display:none">
+        <div class="load-text">Loading scene… <span id="loading-pct">0%</span></div>
+        <div class="load-track">
+          <div id="load-fill"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================== HUD ======================== -->
+  <div id="hud" class="hidden">
+    <!-- Top left: Timer + Role -->
+    <div id="hud-topleft">
+      <div id="hud-timer">3:00</div>
+      <div id="hud-role">PREY</div>
+    </div>
+
+    <!-- Top right: peer fear (shown to hunter) -->
+    <div id="hud-topright">
+      <div id="hud-peer-fear"></div>
+    </div>
+
+    <!-- Bottom right: Fear pulse graph -->
+    <div id="fear-panel">
+      <div id="hud-bpm">♥ 75 BPM</div>
+      <canvas id="fear-graph" width="200" height="60"></canvas>
+    </div>
+
+    <!-- Bottom-left ability HUD (Prey: stamina + phase, Hunter: flashlight status) -->
+    <div id="ability-panel">
+      <div id="flashlight-status">🔦 FLASHLIGHT OFF</div>
+
+      <div id="stamina-wrap" class="meter hidden">
+        <div class="meter-label">STAMINA</div>
+        <div class="meter-track"><div id="stamina-fill" class="meter-fill stamina"></div></div>
+      </div>
+
+      <div id="phase-wrap" class="meter hidden">
+        <div class="meter-label" id="phase-label">PHASE [Q]</div>
+        <div class="meter-track"><div id="phase-fill" class="meter-fill phase"></div></div>
+      </div>
+    </div>
+
+    <!-- Center: Crosshair (Hunter only) -->
+    <div id="crosshair" style="display:none">
+      <span class="ch-h"></span>
+      <span class="ch-v"></span>
+    </div>
+
+    <!-- Debug panel (shown with ?debug=1) -->
+    <div id="debug-panel" style="display:none">
+      <label>BPM Override: <span id="bpm-display">75</span></label>
+      <input id="bpm-slider" type="range" min="60" max="180" value="75" />
+    </div>
+  </div>
+
+  <!-- ======================== GAME OVER ======================== -->
+  <div id="gameover-overlay" class="hidden">
+    <div class="gameover-box">
+      <div id="gameover-msg">GAME OVER</div>
+      <button onclick="location.reload()" class="btn btn-host" style="margin-top:20px">↩ PLAY AGAIN</button>
+    </div>
+  </div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+
+</html>
