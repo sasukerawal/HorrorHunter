@@ -2,13 +2,14 @@
 import * as THREE from 'three'
 import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js'
 import { generateMap } from './map.js'
+import { VolumetricFlashlight } from './volumetricFlashlight.js'
 
 const FLASHLIGHT_BASE_INTENSITY = 16
-const FLASHLIGHT_BASE_ANGLE     = Math.PI / 7   // ~25°
+const FLASHLIGHT_BASE_ANGLE     = Math.PI / 7   // ~25 deg
 const FLASHLIGHT_BASE_DISTANCE  = 36
-const HUNTER_BASE_EXPOSURE      = 0.72
+const HUNTER_BASE_EXPOSURE      = 0.45   // darker - hunter must rely on flashlight
 const TUNNEL_BPM_THRESHOLD      = 100
-const TUNNEL_BPM_FULL           = 160            // full tunnel-vision at this BPM
+const TUNNEL_BPM_FULL           = 160
 
 export class Engine {
     constructor() {
@@ -18,8 +19,7 @@ export class Engine {
         this.ventZones       = []
         this.renderer        = null
         this.camera          = null
-        this.flashlight      = null
-        this.flashFill       = null
+        this.volumetric      = null   // VolumetricFlashlight (owns SpotLight + visible cone)
         this.flashlightOn    = false   // toggled per-role in setRole()
         this.ambientLight    = null
         this.hemisphereLight = null
@@ -32,6 +32,7 @@ export class Engine {
         this._raycaster      = new THREE.Raycaster()
         this._dustPhase      = 0
         this._lightFlickerTimer = 0
+        this._ghostFrameSkip = 0
         this.mapData         = null
         this._extractionPulse = 0
 
@@ -65,7 +66,7 @@ export class Engine {
         this._emergencyTimer  = 0
     }
 
-    init(canvas) {
+    init(canvas, assetManager = null) {
         RectAreaLightUniformsLib.init()
 
         this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' })
@@ -94,17 +95,7 @@ export class Engine {
         moon.castShadow = false
         this.scene.add(moon)
 
-        this.flashlight = new THREE.SpotLight('#fff5e0', FLASHLIGHT_BASE_INTENSITY, FLASHLIGHT_BASE_DISTANCE, FLASHLIGHT_BASE_ANGLE, 0.3, 1.8)
-        this.flashlight.position.set(0, -0.03, 0)
-        this.flashlight.castShadow = true
-        this.flashlight.shadow.mapSize.set(512, 512)
-        this.flashlight.shadow.camera.far = FLASHLIGHT_BASE_DISTANCE
-        this.camera.add(this.flashlight)
-        this.camera.add(this.flashlight.target)
-        this.flashlight.target.position.set(0, 0, -10)
-
-        this.flashFill = new THREE.PointLight('#fff5e0', 2, 5)
-        this.camera.add(this.flashFill)
+        this.volumetric = new VolumetricFlashlight(this.scene, this.camera)
 
         const ghostColors = ['#00ffcc', '#ff6600']
         ghostColors.forEach((color) => {
@@ -122,8 +113,8 @@ export class Engine {
             this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25))
         })
 
-        // ── GENERATE MAP ──
-        this.mapData         = generateMap(this.scene, this.renderer)
+        // ── GENERATE MAP (pass assetManager so GLB props are placed) ──
+        this.mapData         = generateMap(this.scene, this.renderer, assetManager)
         this.collisionMeshes = this.mapData.collisionMeshes
         this.doors           = this.mapData.doors      ?? []
         this.ventZones       = this.mapData.ventZones  ?? []
@@ -161,7 +152,7 @@ export class Engine {
     }
 
     _addDustMotes() {
-        const COUNT     = 900
+        const COUNT     = 350
         const positions = new Float32Array(COUNT * 3)
         for (let i = 0; i < COUNT; i++) {
             positions[i * 3]     = (Math.random() - 0.5) * 60
@@ -208,6 +199,8 @@ export class Engine {
     // ─────────────────────────────────────────────────────────────
     // FLASHLIGHT
     // ─────────────────────────────────────────────────────────────
+    get flashlight() { return this.volumetric?.light ?? null }
+
     toggleFlashlight() {
         this.flashlightOn = !this.flashlightOn
         this.setFlashlightVisible(this.flashlightOn)
@@ -216,55 +209,44 @@ export class Engine {
 
     setFlashlightVisible(visible) {
         this.flashlightOn = visible
-        if (this.flashlight) this.flashlight.visible = visible
-        if (this.flashFill)  this.flashFill.visible  = visible
+        if (this.volumetric) this.volumetric.toggle(visible)
     }
 
     /** Apply BPM/Fear distortion to the spotlight. Called from update(). */
     _updateFlashlight(fearLevel, bpm, dt) {
-        if (!this.flashlight) return
+        if (!this.volumetric) return
+
+        // Keep the shader uniforms (time, cone transform, fear-flicker) in sync every frame.
+        this.volumetric.update(dt, fearLevel)
+
+        const light = this.volumetric.light
+        const fill  = this.volumetric.fill
+
         if (!this.flashlightOn) {
-            this.flashlight.intensity = 0
-            if (this.flashFill) this.flashFill.intensity = 0
+            light.intensity = 0
+            fill.intensity  = 0
             return
         }
 
-        // Tunnel-vision factor — 0 below threshold, 1 at full panic
+        // Tunnel-vision factor — 0 below threshold, 1 at full panic.
         const tunnel = Math.min(1, Math.max(0, (bpm - TUNNEL_BPM_THRESHOLD) / (TUNNEL_BPM_FULL - TUNNEL_BPM_THRESHOLD)))
 
-        // Narrow beam + dim intensity (down to 60% at full tunnel)
-        this.flashlight.angle = FLASHLIGHT_BASE_ANGLE * (1 - tunnel * 0.5)
+        light.angle    = FLASHLIGHT_BASE_ANGLE * (1 - tunnel * 0.5)
+        light.distance = FLASHLIGHT_BASE_DISTANCE - fearLevel * 6
+
         const baseInt = FLASHLIGHT_BASE_INTENSITY * (1 - tunnel * 0.4)
+        const flicker = this.volumetric.getCurrentFlicker()
+        light.intensity = baseInt * flicker
+        fill.intensity  = baseInt * flicker * 0.25
 
-        // Fear > 0.8 → uncontrollable flicker. Fear > 0.6 → softer flicker.
-        if (fearLevel > 0.8) {
-            const inst = Math.random() < 0.22 ? 0 : baseInt * (0.4 + Math.random() * 0.7)
-            this.flashlight.intensity = inst
-            if (this.flashFill) this.flashFill.intensity = inst * 0.25
-        } else if (fearLevel > 0.6) {
-            this._flickerTimer += dt
-            if (this._flickerTimer > 0.04 + Math.random() * 0.09) {
-                this._flickerTimer = 0
-                const inst = Math.random() < 0.15 ? 0 : baseInt * (0.6 + Math.random() * 0.8)
-                this.flashlight.intensity = inst
-                if (this.flashFill) this.flashFill.intensity = inst * 0.28
-            }
-        } else {
-            this.flashlight.intensity = baseInt
-            if (this.flashFill) this.flashFill.intensity = baseInt * 0.28
-        }
-
-        // Beam range shortens with fear
-        this.flashlight.distance = FLASHLIGHT_BASE_DISTANCE - fearLevel * 6
-
-        // Beam shake when BPM > 100
+        // Beam shake when BPM > 100.
         if (bpm > TUNNEL_BPM_THRESHOLD) {
             const sh = Math.min(0.07, (bpm - TUNNEL_BPM_THRESHOLD) / 700)
-            this.flashlight.target.position.x = (Math.random() - 0.5) * sh
-            this.flashlight.target.position.y = (Math.random() - 0.5) * sh
-            this.flashlight.target.position.z = -10
+            light.target.position.x = (Math.random() - 0.5) * sh
+            light.target.position.y = (Math.random() - 0.5) * sh
+            light.target.position.z = -10
         } else {
-            this.flashlight.target.position.set(0, 0, -10)
+            light.target.position.set(0, 0, -10)
         }
     }
 
@@ -272,22 +254,25 @@ export class Engine {
     // FRAME UPDATE
     // ─────────────────────────────────────────────────────────────
     update(elapsed, fearLevel = 0, dt = 0.016, bpm = 75) {
-        // Ghost lights
-        this.ghostLights.forEach(({ light, offset }, i) => {
-            const angle  = elapsed * (0.1 + i * 0.06) + offset
-            const radius = 8 + Math.sin(elapsed * 0.25 + i) * 3
-            light.position.set(
-                Math.cos(angle) * radius,
-                2 + Math.sin(elapsed * 1.8 + i),
-                Math.sin(angle) * radius
-            )
-        })
+        // Ghost lights — update every 3rd frame to save CPU/GPU uniform uploads.
+        this._ghostFrameSkip = (this._ghostFrameSkip + 1) % 3
+        if (this._ghostFrameSkip === 0) {
+            this.ghostLights.forEach(({ light, offset }, i) => {
+                const angle  = elapsed * (0.1 + i * 0.06) + offset
+                const radius = 8 + Math.sin(elapsed * 0.25 + i) * 3
+                light.position.set(
+                    Math.cos(angle) * radius,
+                    2 + Math.sin(elapsed * 1.8 + i),
+                    Math.sin(angle) * radius
+                )
+            })
+        }
 
         this._updateFlashlight(fearLevel, bpm, dt)
 
         // Room lights flicker at a fixed low rate; invisible rooms do not pay update cost.
         this._lightFlickerTimer += dt
-        if (this.mapData?.roomLights && this._lightFlickerTimer >= 0.05) {
+        if (this.mapData?.roomLights && this._lightFlickerTimer >= 0.10) {
             this._lightFlickerTimer = 0
             for (const { light } of this.mapData.roomLights) {
                 if (!light.visible) continue
@@ -334,7 +319,7 @@ export class Engine {
     setRole(role) {
         this.role = role
         if (role === 'prey') {
-            if (this.scene.fog)        this.scene.fog.density = 0.015
+            if (this.scene.fog)        this.scene.fog.density = 0.013
             if (this.ambientLight)     this.ambientLight.intensity = 1.2
             if (this.hemisphereLight)  this.hemisphereLight.intensity = 1.4
             this.renderer.toneMappingExposure = 2.6
@@ -345,13 +330,14 @@ export class Engine {
             }
             this.setFlashlightVisible(false)   // Prey starts WITHOUT flashlight
         } else {
-            if (this.scene.fog)        this.scene.fog.density = 0.04
-            if (this.ambientLight)     this.ambientLight.intensity = 0.18
-            if (this.hemisphereLight)  this.hemisphereLight.intensity = 0.22
+            // Hunter — very dark, relies almost entirely on flashlight
+            if (this.scene.fog)        this.scene.fog.density = 0.055
+            if (this.ambientLight)     this.ambientLight.intensity = 0.08
+            if (this.hemisphereLight)  this.hemisphereLight.intensity = 0.10
             this.renderer.toneMappingExposure = HUNTER_BASE_EXPOSURE
             if (this.mapData?.roomLights) {
                 for (const { light } of this.mapData.roomLights) {
-                    if (light.userData) light.userData.flickerMultiplier = 0.42
+                    if (light.userData) light.userData.flickerMultiplier = 0.28
                 }
             }
             this.setFlashlightVisible(true)    // Hunter starts WITH flashlight
@@ -359,7 +345,20 @@ export class Engine {
     }
 
     render(scene, camera) {
-        this.renderer.render(scene ?? this.scene, camera ?? this.camera)
+        const scn = scene ?? this.scene
+        const cam = camera ?? this.camera
+
+        // Pass 1: normal scene render to canvas.
+        this.renderer.setRenderTarget(null)
+        this.renderer.render(scn, cam)
+
+        // Pass 2: composite the volumetric cone on top (additive, no extra RT needed).
+        if (this.volumetric?.isOn()) {
+            const prev = this.renderer.autoClear
+            this.renderer.autoClear = false
+            this.renderer.render(this.volumetric.fxScene, cam)
+            this.renderer.autoClear = prev
+        }
     }
 
     _rebuildCollisionCache() {
@@ -446,34 +445,52 @@ export class Engine {
     // ─────────────────────────────────────────────────────────────
     // INTERACTIVE DOORS
     // ─────────────────────────────────────────────────────────────
-    tryInteractDoor(playerPos) {
-        let nearest = null
-        let nearestDist = Infinity
-        for (const door of this.doors) {
-            const d = playerPos.distanceTo(door.position)
-            if (d < 2.5 && d < nearestDist) {
-                nearest = door
-                nearestDist = d
-            }
-        }
-        if (!nearest) return false
-
-        nearest.isOpen = !nearest.isOpen
-        if (nearest.isOpen) {
-            nearest.mesh.visible = false
-            const idx = this.collisionMeshes.indexOf(nearest.collider)
+    _applyDoorState(door, isOpen) {
+        if (door.isOpen === isOpen) return false
+        door.isOpen = isOpen
+        if (isOpen) {
+            door.mesh.visible = false
+            const idx = this.collisionMeshes.indexOf(door.collider)
             if (idx !== -1) this.collisionMeshes.splice(idx, 1)
         } else {
-            nearest.mesh.visible = true
-            if (!this.collisionMeshes.includes(nearest.collider)) {
-                this.collisionMeshes.push(nearest.collider)
+            door.mesh.visible = true
+            if (!this.collisionMeshes.includes(door.collider)) {
+                this.collisionMeshes.push(door.collider)
             }
         }
         this.markCollisionCacheDirty()
         this._doorStateVersion += 1
         this._occlusionDirty = true
-        this.updateOcclusion(playerPos, this.findRoomContaining(playerPos))
         return true
+    }
+
+    tryInteractDoor(playerPos) {
+        let nearest = null
+        let nearestDist = Infinity
+        for (const door of this.doors) {
+            const d = playerPos.distanceTo(door.position)
+            if (d < 2.5 && d < nearestDist) { nearest = door; nearestDist = d }
+        }
+        if (!nearest) return null
+
+        this._applyDoorState(nearest, !nearest.isOpen)
+        this.updateOcclusion(playerPos, this.findRoomContaining(playerPos))
+        // Use world position as the network key — immune to any ordering differences.
+        return { x: nearest.position.x, z: nearest.position.z, isOpen: nearest.isOpen }
+    }
+
+    // Apply a door state received from a remote peer. Immediately refreshes occlusion.
+    applyRemoteDoor(x, z, isOpen) {
+        const door = this.doors.find(
+            d => Math.abs(d.position.x - x) < 0.5 && Math.abs(d.position.z - z) < 0.5
+        )
+        if (!door) return false
+        const changed = this._applyDoorState(door, !!isOpen)
+        if (changed) {
+            // Force occlusion to run on the next game-loop iteration.
+            this._occlusionDirty = true
+        }
+        return changed
     }
 
     // ─────────────────────────────────────────────────────────────

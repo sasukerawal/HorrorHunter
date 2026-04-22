@@ -142,20 +142,28 @@ body {
 }
 
 .join-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
   width: 100%;
+  box-sizing: border-box;
+}
+
+.join-row .btn {
+  padding: 12px 14px;
+  font-size: 0.8rem;
+  letter-spacing: 1px;
 }
 
 input#code-input {
-  flex: 1;
-  padding: 12px 16px;
+  min-width: 0;
+  padding: 12px 12px;
   background: #0a0010;
   border: 1px solid var(--border);
   color: var(--cyan);
   font-family: var(--font-mono);
-  font-size: 1.2rem;
-  letter-spacing: 6px;
+  font-size: 1.1rem;
+  letter-spacing: 4px;
   text-align: center;
   text-transform: uppercase;
   outline: none;
@@ -203,6 +211,27 @@ input#code-input:focus {
 .btn-join:hover {
   background: #0d3030;
   box-shadow: 0 0 24px rgba(0, 255, 204, 0.3);
+  transform: translateY(-1px);
+}
+
+.btn-paste {
+  background: #1a1a0a;
+  color: #ffdd66;
+  border: 1px solid #ffdd66;
+  box-shadow: 0 0 10px rgba(255, 220, 80, 0.12);
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  letter-spacing: 1px;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.btn-paste:hover {
+  background: #2a2a10;
+  box-shadow: 0 0 18px rgba(255, 220, 80, 0.3);
   transform: translateY(-1px);
 }
 

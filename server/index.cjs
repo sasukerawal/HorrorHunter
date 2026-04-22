@@ -136,6 +136,11 @@ io.on('connection', (socket) => {
         socket.to(socket.lobbyCode).emit('peerFear', { id: socket.id, fear: data.fear, bpm: data.bpm })
     })
 
+    socket.on('doorToggle', (data) => {
+        // Relay door state to every other client so the map stays in sync
+        socket.to(socket.lobbyCode).emit('doorToggle', data)
+    })
+
     socket.on('netFired', (data) => {
         // Hunter fires net gun — broadcast to all prey
         socket.to(socket.lobbyCode).emit('netHit', { ...data, shooterId: socket.id })

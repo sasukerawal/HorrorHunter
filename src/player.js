@@ -10,6 +10,10 @@ const STAMINA_REGEN    = 8     // per-second
 const STAMINA_MAX      = 100
 const HIDE_YAW_RANGE   = 0.35  // how far the player can pan inside a locker
 
+// Speed constants — Prey is ALWAYS exactly 25% faster than Hunter
+const HUNTER_BASE_SPEED = 5.0
+const PREY_BASE_SPEED   = HUNTER_BASE_SPEED * 1.25  // = 6.25
+
 export class Player {
     constructor(camera, engine) {
         this.camera = camera
@@ -30,7 +34,7 @@ export class Player {
         this.radius    = 0.35
         this.gravity   = 18
         this.jumpSpeed = 7
-        this.baseSpeed = 5
+        this.baseSpeed = HUNTER_BASE_SPEED  // overridden in setRole()
         this.speed     = this.baseSpeed
         // Acceleration model — terminal velocity = accel/friction along input direction
         this.groundFriction = 12
@@ -84,6 +88,8 @@ export class Player {
         this.peerMesh = null
         this.peerIsPhasing = false
         this.peerIsHiding  = false
+        this.peerRole      = null   // 'hunter' | 'prey' — set by main.js after role assignment
+        this.peerFlashlightOn = true
 
         // Phase / Hide event hooks (main.js wires these)
         this.onPhaseStart = null
@@ -289,6 +295,8 @@ export class Player {
         if (this.peerMesh) {
             this._buildPeerModel()
         }
+        // Set deterministic role speed — never altered by fear
+        this.baseSpeed = role === 'hunter' ? HUNTER_BASE_SPEED : PREY_BASE_SPEED
         const map = this.engine.mapData
         if (spawnPos) {
             this.position.copy(spawnPos)
@@ -428,6 +436,8 @@ export class Player {
             return
         }
 
+        // Speed: base speed only — fear modifiers can tweak via preySpeed multiplier
+        // but baseSpeed itself is role-locked (Prey is always 25% faster than Hunter)
         const wishSpeed = this.baseSpeed * (fearModifiers.preySpeed ?? 1)
 
         // Movement follows yaw only, so looking straight up/down never kills horizontal input.
@@ -659,11 +669,14 @@ export class Player {
 
     updatePeer(data) {
         if (!this.peerMesh) return
-        this.peerIsPhasing = !!data.isPhasing
-        this.peerIsHiding  = !!data.isHiding
+        this.peerIsPhasing    = !!data.isPhasing
+        this.peerIsHiding     = !!data.isHiding
+        this.peerFlashlightOn = data.flashlightOn !== false
 
-        // Hide peer entirely while they hide in a locker
-        this.peerMesh.visible = !this.peerIsHiding
+        // Hide peer while they are in a locker, OR when the peer is the hunter
+        // with their flashlight off (hunter becomes a shadow in the dark).
+        const hunterStealth = this.peerRole === 'hunter' && !this.peerFlashlightOn
+        this.peerMesh.visible = !this.peerIsHiding && !hunterStealth
         this.peerPosition.set(data.x, data.y, data.z)
         this.peerMesh.position.copy(this.peerPosition)
 

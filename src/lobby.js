@@ -43,7 +43,6 @@ export class Lobby {
                     copyBtn.textContent = '✅ COPIED!'
                     setTimeout(() => { copyBtn.textContent = '📋 COPY' }, 1500)
                 }).catch(() => {
-                    // Fallback: select + copy
                     const ta = document.createElement('textarea')
                     ta.value = code
                     document.body.appendChild(ta)
@@ -53,6 +52,29 @@ export class Lobby {
                     copyBtn.textContent = '✅ COPIED!'
                     setTimeout(() => { copyBtn.textContent = '📋 COPY' }, 1500)
                 })
+            })
+        }
+
+        // Paste code button — reads clipboard into the code input
+        const pasteBtn = document.getElementById('btn-paste-code')
+        if (pasteBtn) {
+            pasteBtn.addEventListener('click', async () => {
+                try {
+                    const text = await navigator.clipboard.readText()
+                    const code = text.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6)
+                    if (code) {
+                        document.getElementById('code-input').value = code
+                        pasteBtn.textContent = '✅ PASTED!'
+                        setTimeout(() => { pasteBtn.textContent = '📋 PASTE' }, 1200)
+                    }
+                } catch {
+                    // Browser blocked clipboard read — prompt user to paste manually
+                    const input = document.getElementById('code-input')
+                    input.focus()
+                    input.select()
+                    pasteBtn.textContent = 'CTRL+V'
+                    setTimeout(() => { pasteBtn.textContent = '📋 PASTE' }, 1500)
+                }
             })
         }
 

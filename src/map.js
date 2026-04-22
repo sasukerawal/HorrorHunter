@@ -1,29 +1,26 @@
-// src/map.js — Procedural Haunted Hospital (3×3 grid, hiding props, room tagging for occlusion culling)
+// src/map.js — Procedural Haunted Hospital (3×3 grid, GLB props, room tagging for occlusion)
 import * as THREE from 'three'
 
 // ─────────────────────────────────────────────────────────────────
-// TEXTURE MANIFEST
+// TEXTURE MANIFEST — wall.png & floor.png are the two new textures
 // ─────────────────────────────────────────────────────────────────
 const TEXTURES = {
-    victorian: 'LincolnsInnDrawingRoom03.jpeg',
-    stone:     'Daglistugan_900k_u1_v1.jpeg',
-    attic:     'Vinden_900k_u1_v1.jpeg',
-    floor_tile:'room_fl.jpg',
-    stair:     'Trappa1_900k_u1_v1.jpeg',
+    wall:      'wall.png',
+    floor:     'floor.png',
 }
 
 // ─────────────────────────────────────────────────────────────────
 // BLUEPRINT — 8 rooms in a 3×3 grid (NE corner empty).
 // ─────────────────────────────────────────────────────────────────
 export const MAP_BLUEPRINT = [
-    { x:   0, z:   0, w: 14, h: 14, type: 'room', name: 'Reception Hall',    textureKey: 'victorian', floorKey: 'floor_tile' },
-    { x:  14, z:   0, w: 14, h: 14, type: 'room', name: 'Operating Theater', textureKey: 'stone',     floorKey: 'floor_tile' },
-    { x: -14, z:   0, w: 14, h: 14, type: 'room', name: 'Containment Ward',  textureKey: 'stone',     floorKey: 'stair'      },
-    { x:   0, z:  14, w: 14, h: 14, type: 'room', name: 'Observation Deck',  textureKey: 'attic',     floorKey: 'attic'      },
-    { x:   0, z: -14, w: 14, h: 14, type: 'room', name: 'Morgue',            textureKey: 'stair',     floorKey: 'stair'      },
-    { x:  14, z: -14, w: 14, h: 14, type: 'room', name: 'Surgical Prep',     textureKey: 'victorian', floorKey: 'floor_tile' },
-    { x: -14, z: -14, w: 14, h: 14, type: 'room', name: 'ICU Ward',          textureKey: 'victorian', floorKey: 'stair'      },
-    { x: -14, z:  14, w: 14, h: 14, type: 'room', name: 'Pharmacy',          textureKey: 'attic',     floorKey: 'floor_tile' },
+    { x:   0, z:   0, w: 14, h: 14, type: 'room', name: 'Reception Hall'    },
+    { x:  14, z:   0, w: 14, h: 14, type: 'room', name: 'Operating Theater' },
+    { x: -14, z:   0, w: 14, h: 14, type: 'room', name: 'Containment Ward'  },
+    { x:   0, z:  14, w: 14, h: 14, type: 'room', name: 'Observation Deck'  },
+    { x:   0, z: -14, w: 14, h: 14, type: 'room', name: 'Morgue'            },
+    { x:  14, z: -14, w: 14, h: 14, type: 'room', name: 'Surgical Prep'     },
+    { x: -14, z: -14, w: 14, h: 14, type: 'room', name: 'ICU Ward'          },
+    { x: -14, z:  14, w: 14, h: 14, type: 'room', name: 'Pharmacy'          },
 ]
 
 const DOOR_CONNECTIONS = [
@@ -42,7 +39,7 @@ const WALL_HEIGHT    = 4
 const WALL_THICKNESS = 0.3
 const DOOR_WIDTH     = 2.4
 const DOOR_HEIGHT    = 2.6
-const DOOR_SAFE_RADIUS = 3.0   // hiding props avoid this radius around any door
+const DOOR_SAFE_RADIUS = 3.5
 
 export const SPAWN_HUNTER = new THREE.Vector3(  0, 1.7,  0)
 export const SPAWN_PREY   = new THREE.Vector3(-14, 1.7, 14)
@@ -69,47 +66,40 @@ function loadTextures(renderer) {
     }
 
     _texCache = {
-        victorian:  load(TEXTURES.victorian,  4, 4),
-        stone:      load(TEXTURES.stone,      3, 3),
-        attic:      load(TEXTURES.attic,      2, 2),
-        floor_tile: load(TEXTURES.floor_tile, 5, 5),
-        stair:      load(TEXTURES.stair,      3, 3),
+        wall:  load(TEXTURES.wall,  3, 3),    // wall repeats 3x on each face
+        floor: load(TEXTURES.floor, 5, 5),    // floor tiles repeat more
     }
     return _texCache
 }
 
 function createMaterials(textures) {
-    const matFor = (texKey, roughness = 0.92) => new THREE.MeshStandardMaterial({
-        map:       textures ? (textures[texKey] ?? null) : null,
-        color:     '#d8d4cc',
-        roughness,
+    const wallMat  = new THREE.MeshStandardMaterial({
+        map:       textures?.wall  ?? null,
+        color:     '#cccccc',
+        roughness: 0.92,
+        metalness: 0.0,
+    })
+    const floorMat = new THREE.MeshStandardMaterial({
+        map:       textures?.floor ?? null,
+        color:     '#cccccc',
+        roughness: 0.95,
         metalness: 0.0,
     })
     return {
-        victorian:  matFor('victorian',  0.90),
-        stone:      matFor('stone',      0.96),
-        attic:      matFor('attic',      0.94),
-        floor_tile: matFor('floor_tile', 0.95),
-        stair:      matFor('stair',      0.98),
+        wall:       wallMat,
+        floor:      floorMat,
+        ceiling:    new THREE.MeshStandardMaterial({ color: '#2a2a2a', roughness: 0.95 }),
         door:       new THREE.MeshStandardMaterial({ color: '#5a3a20', roughness: 0.95, metalness: 0.05 }),
-        ceiling:    new THREE.MeshStandardMaterial({ color: '#3a3a3a', roughness: 0.95 }),
-        generic:    new THREE.MeshStandardMaterial({ color: '#888888', roughness: 0.88 }),
-        curtain:    new THREE.MeshStandardMaterial({
-            color: '#3d2a2a', roughness: 0.95, metalness: 0.0,
-            side: THREE.DoubleSide, transparent: true, opacity: 0.92,
-        }),
         locker:     new THREE.MeshStandardMaterial({ color: '#2a3138', roughness: 0.55, metalness: 0.7 }),
         lockerDoor: new THREE.MeshStandardMaterial({ color: '#1d242a', roughness: 0.45, metalness: 0.8 }),
-        gurney:     new THREE.MeshStandardMaterial({ color: '#aaaaaa', roughness: 0.5,  metalness: 0.6 }),
-        gurneyPad:  new THREE.MeshStandardMaterial({ color: '#3a1e1e', roughness: 0.95, metalness: 0.0 }),
-        crate:      new THREE.MeshStandardMaterial({ color: '#5a3d22', roughness: 0.95, metalness: 0.05 }),
     }
 }
 
 // ─────────────────────────────────────────────────────────────────
 // MAIN GENERATOR
+// assetManager is optional — pass the loaded AssetManager to place GLB props.
 // ─────────────────────────────────────────────────────────────────
-export function generateMap(scene, renderer = null) {
+export function generateMap(scene, renderer = null, assetManager = null) {
     const textures = loadTextures(renderer)
     const mats     = createMaterials(textures)
 
@@ -121,8 +111,6 @@ export function generateMap(scene, renderer = null) {
     const roomObjects     = new Map(MAP_BLUEPRINT.map(room => [room.name, []]))
     const allRoomObjects  = new Set()
 
-    const roomMat = (texKey) => mats[texKey] ?? mats.generic
-
     const tagRooms = (obj, roomNames) => {
         const names = Array.isArray(roomNames) ? roomNames : [roomNames]
         obj.userData.rooms = names
@@ -133,9 +121,9 @@ export function generateMap(scene, renderer = null) {
         }
     }
 
-    const registerCollision = (mesh, roomNames = null, castsShadow = true) => {
+    const registerCollision = (mesh, roomNames = null, castsShadow = false) => {
         mesh.castShadow    = castsShadow
-        mesh.receiveShadow = castsShadow // don't receive if not casting to save perf
+        mesh.receiveShadow = castsShadow
         scene.add(mesh)
         collisionMeshes.push({ mesh, box: new THREE.Box3().setFromObject(mesh) })
         if (roomNames) tagRooms(mesh, roomNames)
@@ -144,11 +132,10 @@ export function generateMap(scene, renderer = null) {
 
     const roomEdges = MAP_BLUEPRINT.map(r => ({
         name: r.name,
-        left:  r.x - r.w / 2,  right: r.x + r.w / 2,
-        front: r.z - r.h / 2,  back:  r.z + r.h / 2,
+        left:  r.x - r.w / 2, right: r.x + r.w / 2,
+        front: r.z - r.h / 2, back:  r.z + r.h / 2,
     }))
 
-    // For a wall on `side` of `roomName`, returns the neighbor room name (or null) + connection meta
     const neighborOf = (roomName, side) => {
         const thisRoom = roomEdges.find(r => r.name === roomName)
         if (!thisRoom) return null
@@ -178,24 +165,21 @@ export function generateMap(scene, renderer = null) {
     const builtWalls = new Set()
 
     MAP_BLUEPRINT.forEach((room) => {
-        const { x, z, w, h, name, textureKey, floorKey } = room
-        const wallM  = roomMat(textureKey)
-        const floorM = roomMat(floorKey ?? textureKey)
-        const ceilM  = mats.ceiling
+        const { x, z, w, h, name } = room
 
-        // Floor + ceiling — single-room tag
-        // Floor + ceiling — no shadows needed for these large static planes
-        const floor = new THREE.Mesh(new THREE.BoxGeometry(w, 0.15, h), floorM)
+        // ── Floor ──
+        const floor = new THREE.Mesh(new THREE.BoxGeometry(w, 0.15, h), mats.floor)
         floor.position.set(x, -0.075, z)
         floor.name = `floor_${name}`
         registerCollision(floor, [name], false)
 
-        const ceil = new THREE.Mesh(new THREE.BoxGeometry(w, 0.15, h), ceilM)
+        // ── Ceiling ──
+        const ceil = new THREE.Mesh(new THREE.BoxGeometry(w, 0.15, h), mats.ceiling)
         ceil.position.set(x, WALL_HEIGHT + 0.075, z)
         ceil.name = `ceiling_${name}`
         registerCollision(ceil, [name], false)
 
-        // Walls AT the boundary (not inset) so adjacent rooms truly share them
+        // ── Walls ──
         const wallArgs = [
             { cx: x,         cz: z + h / 2, length: w, axis: 'x', side: 'north' },
             { cx: x,         cz: z - h / 2, length: w, axis: 'x', side: 'south' },
@@ -210,11 +194,10 @@ export function generateMap(scene, renderer = null) {
             if (builtWalls.has(key)) return
             builtWalls.add(key)
 
-            // Tag this wall with both rooms it borders (for occlusion: visible from either side)
-            const neighbor = neighborOf(name, side)
+            const neighbor  = neighborOf(name, side)
             const wallRooms = neighbor ? [name, neighbor] : [name]
 
-            _buildWallSegment(scene, collisionMeshes, mats, wallM, {
+            _buildWallSegment(scene, collisionMeshes, mats, mats.wall, {
                 cx, cz, length, height: WALL_HEIGHT,
                 thick: WALL_THICKNESS, axis,
                 hasDoor: shouldHaveDoor(name, side),
@@ -223,7 +206,7 @@ export function generateMap(scene, renderer = null) {
             }, doors, tagRooms)
         })
 
-        // ── LIGHTING ──
+        // ── Room Light ──
         const isHorrorRoom = ['Morgue', 'Containment Ward', 'ICU Ward'].includes(name)
         const lightColor   = isHorrorRoom ? 0xff5544 : 0xccddff
         const baseI        = 5.0
@@ -234,29 +217,28 @@ export function generateMap(scene, renderer = null) {
         roomLight.castShadow = false
         roomLight.userData.baseIntensity     = baseI
         roomLight.userData.flickerMultiplier = 1.0
+        roomLight.userData.flickerStrength   = isHorrorRoom ? 0.9 : 0.5
         scene.add(roomLight)
         tagRooms(roomLight, [name])
-
-        const flickerStrength = isHorrorRoom ? 0.9 : 0.5
-        roomLight.userData.flickerStrength = flickerStrength
-        // removed internal flicker loop — now handled in engine.js update()
         roomLights.push({ light: roomLight, name })
-
-        // Keep room lighting to one non-shadowed point light per room for lower frame cost.
     })
 
-    // Extraction in Surgical Prep
+    // ── Extraction zone (Surgical Prep) ──
     const extractionRoom = MAP_BLUEPRINT.find(r => r.name === 'Surgical Prep')
     if (extractionRoom) _addExtractionZone(scene, extractionRoom.x, extractionRoom.z, tagRooms)
 
+    // ── Blood decals ──
     _addBloodDecals(scene, tagRooms)
-    _addDebrisClusters(scene, collisionMeshes, tagRooms)
 
-    // Hiding props — curtains, lockers, gurneys/crates
-    spawnHidingProps(scene, collisionMeshes, mats, doors, lockers, tagRooms)
-    _pruneSpawnBlockers(scene, collisionMeshes, lockers)
+    // ── GLB props (replaces all old procedural props) ──
+    if (assetManager && assetManager.isReady()) {
+        _placeGLBProps(scene, collisionMeshes, assetManager, doors, lockers, tagRooms)
+    } else {
+        // Fallback: place simple lockers so there's at least a hiding spot
+        _placeFallbackLockers(scene, collisionMeshes, mats, doors, lockers, tagRooms)
+    }
 
-    // Health pickups — glowing green crosses scattered in rooms
+    // ── Health pickups ──
     const healthPickups = []
     _spawnHealthPickups(scene, healthPickups, doors, tagRooms)
 
@@ -285,7 +267,7 @@ export function generateMap(scene, renderer = null) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// WALL SEGMENT BUILDER (with optional door gap + door mesh)
+// WALL SEGMENT BUILDER
 // ─────────────────────────────────────────────────────────────────
 function _buildWallSegment(scene, collisionMeshes, mats, mat, opts, doors = null, tagRooms = null) {
     const { cx, cz, length, height, thick, axis, hasDoor, name, rooms = null } = opts
@@ -298,7 +280,7 @@ function _buildWallSegment(scene, collisionMeshes, mats, mat, opts, doors = null
         mesh.position.set(cx, height / 2, cz)
         mesh.name          = name
         mesh.castShadow    = false
-        mesh.receiveShadow = false // Walls don't need to receive shadows in this lighting style
+        mesh.receiveShadow = false
         scene.add(mesh)
         collisionMeshes.push({ mesh, box: new THREE.Box3().setFromObject(mesh) })
         if (rooms && tagRooms) tagRooms(mesh, rooms)
@@ -330,12 +312,7 @@ function _buildWallSegment(scene, collisionMeshes, mats, mat, opts, doors = null
     const lintelGeo = axis === 'x'
         ? new THREE.BoxGeometry(DOOR_WIDTH + 0.1, 0.3, thick + 0.05)
         : new THREE.BoxGeometry(thick + 0.05, 0.3, DOOR_WIDTH + 0.1)
-    const lintelMat = new THREE.MeshStandardMaterial({
-        map:       _texCache?.stair ?? null,
-        color:     '#a89888',
-        roughness: 0.95,
-    })
-    const lintel = new THREE.Mesh(lintelGeo, lintelMat)
+    const lintel = new THREE.Mesh(lintelGeo, mat)
     lintel.position.set(cx, height - 0.15, cz)
     lintel.castShadow = false
     lintel.receiveShadow = false
@@ -364,202 +341,165 @@ function _buildWallSegment(scene, collisionMeshes, mats, mat, opts, doors = null
         doorMesh.userData.doorState = door
         scene.add(doorMesh)
         if (rooms && tagRooms) tagRooms(doorMesh, rooms)
-
         doors.push(door)
     }
 }
 
 // ─────────────────────────────────────────────────────────────────
-// HIDING PROPS — curtains (no collision), lockers (trigger), gurneys/crates (AABB)
+// GLB PROP PLACEMENT
+// One prop per room, chosen from the manifest, spaced well away
+// from doors, spawns and each other so the player isn't blocked.
 // ─────────────────────────────────────────────────────────────────
-function _isNearSpawn(box, radius = 5.2) {
-    const spawns = [SPAWN_HUNTER, SPAWN_PREY]
-    for (const spawn of spawns) {
-        const closestX = Math.max(box.min.x, Math.min(spawn.x, box.max.x))
-        const closestZ = Math.max(box.min.z, Math.min(spawn.z, box.max.z))
-        const dx = closestX - spawn.x
-        const dz = closestZ - spawn.z
-        if (Math.sqrt(dx * dx + dz * dz) < radius) return true
+function _isNearSpawn(px, pz, radius = 5.5) {
+    for (const sp of [SPAWN_HUNTER, SPAWN_PREY]) {
+        if (Math.hypot(px - sp.x, pz - sp.z) < radius) return true
     }
     return false
 }
 
-function _markSpawnBlocker(mesh, root = mesh) {
-    mesh.userData.spawnBlocker = true
-    mesh.userData.spawnRoot = root
+function _isNearDoor(px, pz, doors, radius = DOOR_SAFE_RADIUS) {
+    for (const d of doors) {
+        if (Math.hypot(px - d.position.x, pz - d.position.z) < radius) return true
+    }
+    return false
 }
 
-function _pruneSpawnBlockers(scene, collisionMeshes, lockers) {
-    const removedRoots = new Set()
-    for (let i = collisionMeshes.length - 1; i >= 0; i--) {
-        const entry = collisionMeshes[i]
-        const mesh = entry.mesh
-        if (!mesh?.userData?.spawnBlocker) continue
-        entry.box.setFromObject(mesh)
-        if (!_isNearSpawn(entry.box)) continue
+// Placement table — one entry per room with hand-tuned local offsets.
+// Offsets are relative to the room centre; yaw is in radians.
+const GLB_PLACEMENTS = [
+    // roomName,            modelKey,            dx,   dz,    yaw
+    ['Reception Hall',    'horrorMonster',       2,   -3,    Math.PI * 0.75],
+    ['Operating Theater', 'horrorDoll',         -3,    3,    0            ],
+    ['Containment Ward',  'smilyHorrorMonster',  3,   -2,    Math.PI      ],
+    ['Observation Deck',  'horrorMask',         -2,    2,    Math.PI / 2  ],
+    ['Morgue',            'horrorDoll',          4,    3,   -Math.PI / 3  ],
+    ['Surgical Prep',     'horrorMonster',      -3,   -4,    Math.PI / 4  ],
+    ['ICU Ward',          'smilyHorrorMonster', -3,    3,    Math.PI * 1.5],
+    ['Pharmacy',          'horrorMask',          3,   -3,    Math.PI      ],
+]
 
-        const root = mesh.userData.spawnRoot ?? mesh
-        if (!removedRoots.has(root)) {
-            root.parent?.remove(root)
-            scene.remove(root)
-            removedRoots.add(root)
-        }
-        collisionMeshes.splice(i, 1)
+function _placeGLBProps(scene, collisionMeshes, assetManager, doors, lockers, tagRooms) {
+    let placed = 0
+
+    for (const [roomName, modelKey, dx, dz, yaw] of GLB_PLACEMENTS) {
+        if (!assetManager.has(modelKey)) continue
+
+        const room = MAP_BLUEPRINT.find(r => r.name === roomName)
+        if (!room) continue
+
+        const px = room.x + dx
+        const pz = room.z + dz
+
+        // Safety checks — skip if too close to a door or spawn
+        if (_isNearSpawn(px, pz)) continue
+        if (_isNearDoor(px, pz, doors)) continue
+
+        const clone = assetManager.clone(modelKey)
+        if (!clone) continue
+
+        clone.position.set(px, 0, pz)
+        clone.rotation.y = yaw
+        clone.name = `glbProp_${modelKey}_${roomName}`
+
+        // ── Traverse for shadows & collision ──
+        const propBox = new THREE.Box3().setFromObject(clone)
+        const propSize = new THREE.Vector3()
+        propBox.getSize(propSize)
+
+        // Add a simple invisible AABB collider so player can't walk through
+        // large props (thin collider = half the XZ footprint, full height)
+        const colW = Math.min(propSize.x * 0.7, 1.2)
+        const colD = Math.min(propSize.z * 0.7, 1.2)
+        const colGeo = new THREE.BoxGeometry(colW, propSize.y, colD)
+        const colMesh = new THREE.Mesh(
+            colGeo,
+            new THREE.MeshBasicMaterial({ visible: false })
+        )
+        colMesh.position.set(px, propSize.y / 2, pz)
+        colMesh.name = `${clone.name}_col`
+        scene.add(colMesh)
+        collisionMeshes.push({ mesh: colMesh, box: new THREE.Box3().setFromObject(colMesh) })
+
+        clone.traverse(child => {
+            if (child.isMesh) {
+                child.castShadow    = true
+                child.receiveShadow = false
+            }
+        })
+
+        scene.add(clone)
+        if (tagRooms) tagRooms(clone, [roomName])
+        placed++
     }
 
-    for (let i = lockers.length - 1; i >= 0; i--) {
-        if (!lockers[i].mesh.parent) lockers.splice(i, 1)
-    }
+    // Also place a locker in each room (separate from GLB props)
+    _placeFallbackLockers(scene, collisionMeshes, null, doors, lockers, tagRooms)
 
-    if (removedRoots.size) {
-        console.log(`[MapSystem] Removed ${removedRoots.size} spawn-blocking props`)
-    }
+    console.log(`[MapSystem] ${placed} GLB props placed`)
 }
 
-export function spawnHidingProps(scene, collisionMeshes, mats, doors, lockers, tagRooms) {
-    // Returns true if (px, pz) is at least DOOR_SAFE_RADIUS from every door
-    const farFromDoors = (px, pz) => {
-        for (const d of doors) {
-            const dx = px - d.position.x, dz = pz - d.position.z
-            if (Math.sqrt(dx * dx + dz * dz) < DOOR_SAFE_RADIUS) return false
-        }
-        return true
-    }
-    const farFromSpawns = (px, pz) => {
-        if (Math.abs(px - SPAWN_HUNTER.x) < 4.0 && Math.abs(pz - SPAWN_HUNTER.z) < 4.0) return false
-        if (Math.abs(px - SPAWN_PREY.x)   < 4.0 && Math.abs(pz - SPAWN_PREY.z)   < 4.0) return false
-        return true
-    }
+// ─────────────────────────────────────────────────────────────────
+// LOCKER — simple box locker in every room so prey can hide
+// ─────────────────────────────────────────────────────────────────
+function _placeFallbackLockers(scene, collisionMeshes, mats, doors, lockers, tagRooms) {
+    // One locker per room on an interior wall, clear of doors & spawns
+    const lockerSidePriority = ['south', 'north', 'east', 'west']
 
-    let curtains = 0, lockerCount = 0, gurneys = 0, crates = 0
+    const lockerMat     = mats ? mats.locker     : new THREE.MeshStandardMaterial({ color: '#2a3138', roughness: 0.55, metalness: 0.7 })
+    const lockerDoorMat = mats ? mats.lockerDoor : new THREE.MeshStandardMaterial({ color: '#1d242a', roughness: 0.45, metalness: 0.8 })
 
     for (const room of MAP_BLUEPRINT) {
-        if (room.type !== 'room') continue
         const { x, z, w, h, name } = room
+        let placed = false
 
-        // ── 1 LOCKER per room — placed against an interior wall, facing room center ──
-        const lockerSide = _pickWallSideForLocker(room, doors)
-        if (lockerSide) {
-            const { pos, faceYaw } = _lockerPlacement(room, lockerSide)
-            if (farFromDoors(pos.x, pos.z) && farFromSpawns(pos.x, pos.z)) {
-                _buildLocker(scene, collisionMeshes, mats, pos, faceYaw, name, lockers, tagRooms)
-                lockerCount++
-            }
+        for (const side of lockerSidePriority) {
+            let px, pz, faceYaw
+            const off = 0.6
+            if (side === 'north') { px = x; pz = z + h / 2 - off; faceYaw = Math.PI   }
+            else if (side === 'south') { px = x; pz = z - h / 2 + off; faceYaw = 0     }
+            else if (side === 'east')  { px = x + w / 2 - off; pz = z; faceYaw = Math.PI / 2    }
+            else                       { px = x - w / 2 + off; pz = z; faceYaw = -Math.PI / 2   }
+
+            if (_isNearSpawn(px, pz, 4.5)) continue
+            if (_isNearDoor(px, pz, doors, DOOR_SAFE_RADIUS)) continue
+
+            _buildLocker(scene, collisionMeshes, lockerMat, lockerDoorMat, px, pz, faceYaw, name, lockers, tagRooms)
+            placed = true
+            break
         }
 
-        // ── 1-2 CURTAINS hanging from ceiling ──
-        const curtainCount = 1 + Math.floor(Math.random() * 2)
-        for (let i = 0; i < curtainCount; i++) {
-            const px = x + (Math.random() - 0.5) * (w - 4)
-            const pz = z + (Math.random() - 0.5) * (h - 4)
-            if (!farFromDoors(px, pz) || !farFromSpawns(px, pz)) continue
-            _buildCurtain(scene, mats, px, pz, name, tagRooms)
-            curtains++
-        }
-
-        // ── 1-2 GURNEYS ──
-        const gurneyCount = 1 + Math.floor(Math.random() * 2)
-        for (let i = 0; i < gurneyCount; i++) {
-            const px = x + (Math.random() - 0.5) * (w - 3)
-            const pz = z + (Math.random() - 0.5) * (h - 3)
-            if (!farFromDoors(px, pz) || !farFromSpawns(px, pz)) continue
-            _buildGurney(scene, collisionMeshes, mats, px, pz, name, tagRooms)
-            gurneys++
-        }
-
-        // ── 0-2 CRATES ──
-        const crateCount = Math.floor(Math.random() * 3)
-        for (let i = 0; i < crateCount; i++) {
-            const px = x + (Math.random() - 0.5) * (w - 2)
-            const pz = z + (Math.random() - 0.5) * (h - 2)
-            if (!farFromDoors(px, pz) || !farFromSpawns(px, pz)) continue
-            _buildCrate(scene, collisionMeshes, mats, px, pz, name, tagRooms)
-            crates++
+        if (!placed) {
+            // Last resort: centre of room
+            const px = x, pz = z
+            _buildLocker(scene, collisionMeshes, lockerMat, lockerDoorMat, px, pz, 0, name, lockers, tagRooms)
         }
     }
-
-    console.log(`[HidingProps] ${lockerCount} lockers | ${curtains} curtains | ${gurneys} gurneys | ${crates} crates`)
 }
 
-function _pickWallSideForLocker(room, doors) {
-    // Pick a wall that doesn't have a door near its midpoint
-    const sides = ['north', 'south', 'east', 'west']
-    const shuffled = sides.sort(() => Math.random() - 0.5)
-    const wallMid = (side) => {
-        if (side === 'north') return new THREE.Vector3(room.x,                room.y ?? 0, room.z + room.h / 2)
-        if (side === 'south') return new THREE.Vector3(room.x,                room.y ?? 0, room.z - room.h / 2)
-        if (side === 'east')  return new THREE.Vector3(room.x + room.w / 2,   room.y ?? 0, room.z)
-        return                       new THREE.Vector3(room.x - room.w / 2,   room.y ?? 0, room.z)
-    }
-    for (const side of shuffled) {
-        const mid = wallMid(side)
-        let conflict = false
-        for (const d of doors) {
-            if (Math.abs(d.position.x - mid.x) < 2 && Math.abs(d.position.z - mid.z) < 2) {
-                conflict = true; break
-            }
-        }
-        if (!conflict) return side
-    }
-    return null
-}
-
-function _lockerPlacement(room, side) {
-    // Stand the locker just inside the wall and face the room center
-    const off = 0.55
-    let pos, faceYaw
-    if (side === 'north') {
-        pos = new THREE.Vector3(room.x + (Math.random() - 0.5) * (room.w - 3), 1.0, room.z + room.h / 2 - off)
-        faceYaw = Math.PI                                  // looking south (toward -z = room center)
-    } else if (side === 'south') {
-        pos = new THREE.Vector3(room.x + (Math.random() - 0.5) * (room.w - 3), 1.0, room.z - room.h / 2 + off)
-        faceYaw = 0                                        // looking north (+z)
-    } else if (side === 'east') {
-        pos = new THREE.Vector3(room.x + room.w / 2 - off, 1.0, room.z + (Math.random() - 0.5) * (room.h - 3))
-        faceYaw = Math.PI / 2                              // looking west (-x)
-    } else {
-        pos = new THREE.Vector3(room.x - room.w / 2 + off, 1.0, room.z + (Math.random() - 0.5) * (room.h - 3))
-        faceYaw = -Math.PI / 2                             // looking east (+x)
-    }
-    return { pos, faceYaw }
-}
-
-function _buildLocker(scene, collisionMeshes, mats, pos, faceYaw, roomName, lockers, tagRooms) {
+function _buildLocker(scene, collisionMeshes, lockerMat, lockerDoorMat, px, pz, faceYaw, roomName, lockers, tagRooms) {
     const group = new THREE.Group()
-    group.position.copy(pos)
+    group.position.set(px, 0, pz)
     group.rotation.y = faceYaw
     group.name = `locker_${roomName}`
 
-    // Body
-    const bodyGeo = new THREE.BoxGeometry(0.85, 2.0, 0.55)
-    const body    = new THREE.Mesh(bodyGeo, mats.locker)
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.85, 2.0, 0.55), lockerMat)
+    body.position.set(0, 1.0, 0)
     body.castShadow = false
-    body.receiveShadow = false
-    _markSpawnBlocker(body, group)
-    body.position.set(0, 0, 0)
     group.add(body)
 
-    // Door panel (slightly inset)
-    const doorGeo = new THREE.BoxGeometry(0.78, 1.85, 0.04)
-    const door    = new THREE.Mesh(doorGeo, mats.lockerDoor)
-    door.position.set(0, 0, -0.28)
-    door.castShadow = false
-    door.receiveShadow = false
-    group.add(door)
+    const doorPanel = new THREE.Mesh(new THREE.BoxGeometry(0.78, 1.85, 0.04), lockerDoorMat)
+    doorPanel.position.set(0, 1.0, -0.285)
+    group.add(doorPanel)
 
-    // Vent slats
     const slatMat = new THREE.MeshStandardMaterial({ color: '#0a0d10', roughness: 0.9 })
     for (let i = 0; i < 5; i++) {
         const slat = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.04, 0.01), slatMat)
-        slat.position.set(0, 0.6 - i * 0.12, -0.30)
-        slat.castShadow = false
-        slat.receiveShadow = false
+        slat.position.set(0, 1.6 - i * 0.12, -0.30)
         group.add(slat)
     }
 
     scene.add(group)
 
-    // Collider — body box (lockers are solid AABB)
     const colliderBox = new THREE.Box3().setFromObject(body)
     collisionMeshes.push({ mesh: body, box: colliderBox })
     if (tagRooms) {
@@ -567,98 +507,10 @@ function _buildLocker(scene, collisionMeshes, mats, pos, faceYaw, roomName, lock
         tagRooms(body, [roomName])
     }
 
-    // Locker entry trigger position — stand 0.9m in front (along facing direction)
+    // Entry trigger — stand in front of locker
     const facing = new THREE.Vector3(Math.sin(faceYaw), 0, Math.cos(faceYaw))
-    const entry  = pos.clone().add(facing.clone().multiplyScalar(0.95))
-    entry.y = 1.7
-    lockers.push({
-        position: entry,
-        lockedYaw: faceYaw,
-        roomName,
-        mesh: group,
-    })
-}
-
-function _buildCurtain(scene, mats, px, pz, roomName, tagRooms) {
-    // Tall thin double-sided plane — visual occluder, no collision
-    const w = 1.4 + Math.random() * 0.6
-    const h = 2.6
-    const geo = new THREE.PlaneGeometry(w, h, 1, 1)
-    const mesh = new THREE.Mesh(geo, mats.curtain)
-    mesh.position.set(px, h / 2, pz)
-    mesh.rotation.y = Math.random() * Math.PI
-    mesh.castShadow = false
-    mesh.receiveShadow = false
-    scene.add(mesh)
-    if (tagRooms) tagRooms(mesh, [roomName])
-
-    // Curtain rail (thin metal bar above)
-    const railGeo = new THREE.BoxGeometry(w + 0.2, 0.04, 0.04)
-    const railMat = new THREE.MeshStandardMaterial({ color: '#888', roughness: 0.4, metalness: 0.8 })
-    const rail = new THREE.Mesh(railGeo, railMat)
-    rail.position.set(px, h + 0.05, pz)
-    rail.rotation.y = mesh.rotation.y
-    rail.castShadow = false
-    rail.receiveShadow = false
-    scene.add(rail)
-    if (tagRooms) tagRooms(rail, [roomName])
-}
-
-function _buildGurney(scene, collisionMeshes, mats, px, pz, roomName, tagRooms) {
-    const group = new THREE.Group()
-    group.position.set(px, 0, pz)
-    group.rotation.y = Math.random() * Math.PI
-    group.name = `gurney_${roomName}`
-
-    // Frame top
-    const frame = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.08, 0.85), mats.gurney)
-    frame.position.set(0, 0.78, 0)
-    frame.castShadow = false
-    frame.receiveShadow = false
-    group.add(frame)
-
-    // Padded mattress
-    const pad = new THREE.Mesh(new THREE.BoxGeometry(1.95, 0.1, 0.78), mats.gurneyPad)
-    pad.position.set(0, 0.86, 0)
-    pad.castShadow = false
-    pad.receiveShadow = false
-    group.add(pad)
-
-    // Legs
-    const legMat = mats.gurney
-    const legPos = [[0.85, 0.35], [-0.85, 0.35], [0.85, -0.35], [-0.85, -0.35]]
-    for (const [lx, lz] of legPos) {
-        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.78, 6), legMat)
-        leg.position.set(lx, 0.39, lz)
-        leg.castShadow = false
-        leg.receiveShadow = false
-        group.add(leg)
-    }
-
-    scene.add(group)
-
-    // AABB collider — use the frame for collision
-    const colliderBox = new THREE.Box3().setFromObject(frame)
-    _markSpawnBlocker(frame, group)
-    collisionMeshes.push({ mesh: frame, box: colliderBox })
-    if (tagRooms) {
-        tagRooms(group, [roomName])
-        tagRooms(frame, [roomName])
-    }
-}
-
-function _buildCrate(scene, collisionMeshes, mats, px, pz, roomName, tagRooms) {
-    const size = 0.7 + Math.random() * 0.5
-    const geo  = new THREE.BoxGeometry(size, size, size)
-    const mesh = new THREE.Mesh(geo, mats.crate)
-    mesh.position.set(px, size / 2, pz)
-    mesh.rotation.y = Math.random() * Math.PI
-    mesh.castShadow    = false
-    mesh.receiveShadow = false
-    _markSpawnBlocker(mesh)
-    scene.add(mesh)
-    collisionMeshes.push({ mesh, box: new THREE.Box3().setFromObject(mesh) })
-    if (tagRooms) tagRooms(mesh, [roomName])
+    const entry  = new THREE.Vector3(px, 1.7, pz).addScaledVector(facing, 0.95)
+    lockers.push({ position: entry, lockedYaw: faceYaw, roomName, mesh: group })
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -708,7 +560,6 @@ function _addBloodDecals(scene, tagRooms) {
         mesh.rotation.x = -Math.PI / 2
         mesh.position.set(bx, 0.02, bz)
         scene.add(mesh)
-        // Tag with whichever room contains the spot
         if (tagRooms) {
             const r = MAP_BLUEPRINT.find(r =>
                 bx >= r.x - r.w / 2 && bx <= r.x + r.w / 2 &&
@@ -720,56 +571,7 @@ function _addBloodDecals(scene, tagRooms) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// DEBRIS CLUSTERS — keep clear of spawns
-// ─────────────────────────────────────────────────────────────────
-function _addDebrisClusters(scene, collisionMeshes, tagRooms) {
-    const debrisMat = new THREE.MeshStandardMaterial({ color: '#3a2818', roughness: 0.95, metalness: 0.05 })
-
-    const safeZone = (px, pz) => {
-        if (Math.abs(px - SPAWN_HUNTER.x) < 3 && Math.abs(pz - SPAWN_HUNTER.z) < 3) return false
-        if (Math.abs(px - SPAWN_PREY.x)   < 3 && Math.abs(pz - SPAWN_PREY.z)   < 3) return false
-        return true
-    }
-
-    let placed = 0
-    for (const room of MAP_BLUEPRINT) {
-        if (room.type !== 'room') continue
-        const count = 3 + Math.floor(Math.random() * 4)
-        for (let i = 0; i < count; i++) {
-            const px = room.x + (Math.random() - 0.5) * (room.w - 2)
-            const pz = room.z + (Math.random() - 0.5) * (room.h - 2)
-            if (!safeZone(px, pz)) continue
-            const pieces = 1 + Math.floor(Math.random() * 3)
-            for (let j = 0; j < pieces; j++) {
-                const sw = 0.2 + Math.random() * 0.5
-                const sh = 0.15 + Math.random() * 0.4
-                const sd = 0.2 + Math.random() * 0.5
-                const geo  = Math.random() < 0.7
-                    ? new THREE.BoxGeometry(sw, sh, sd)
-                    : new THREE.SphereGeometry(sw * 0.4, 6, 6)
-                const mesh = new THREE.Mesh(geo, debrisMat)
-                mesh.position.set(
-                    px + (Math.random() - 0.5) * 0.8,
-                    sh / 2,
-                    pz + (Math.random() - 0.5) * 0.8
-                )
-                mesh.rotation.y = Math.random() * Math.PI
-                mesh.rotation.z = (Math.random() - 0.5) * 0.25
-                mesh.castShadow    = false // Debris clusters too small for shadows
-                mesh.receiveShadow = false
-                _markSpawnBlocker(mesh)
-                scene.add(mesh)
-                collisionMeshes.push({ mesh, box: new THREE.Box3().setFromObject(mesh) })
-                if (tagRooms) tagRooms(mesh, [room.name])
-            }
-            placed++
-        }
-    }
-    console.log(`[MapSystem] ${placed} debris clusters placed`)
-}
-
-// ─────────────────────────────────────────────────────────────────
-// HEALTH PICKUPS — glowing green crosses, 1-2 per room
+// HEALTH PICKUPS — glowing green crosses
 // ─────────────────────────────────────────────────────────────────
 function _spawnHealthPickups(scene, healthPickups, doors, tagRooms) {
     const crossMat = new THREE.MeshStandardMaterial({
@@ -779,8 +581,7 @@ function _spawnHealthPickups(scene, healthPickups, doors, tagRooms) {
 
     const farFromDoors = (px, pz) => {
         for (const d of doors) {
-            const dx = px - d.position.x, dz = pz - d.position.z
-            if (Math.sqrt(dx * dx + dz * dz) < 2.5) return false
+            if (Math.hypot(px - d.position.x, pz - d.position.z) < 2.5) return false
         }
         return true
     }
@@ -788,31 +589,23 @@ function _spawnHealthPickups(scene, healthPickups, doors, tagRooms) {
     let count = 0
     for (const room of MAP_BLUEPRINT) {
         if (room.type !== 'room') continue
-        const numPickups = 1 + Math.floor(Math.random() * 2) // 1-2 per room
+        const numPickups = 1 + Math.floor(Math.random() * 2)
         for (let i = 0; i < numPickups; i++) {
             const px = room.x + (Math.random() - 0.5) * (room.w - 4)
             const pz = room.z + (Math.random() - 0.5) * (room.h - 4)
             if (!farFromDoors(px, pz)) continue
+            if (_isNearSpawn(px, pz, 3.5)) continue
 
             const group = new THREE.Group()
             group.position.set(px, 0.6, pz)
 
-            // Vertical bar of the cross
-            const vBar = new THREE.Mesh(
-                new THREE.BoxGeometry(0.12, 0.4, 0.12),
-                crossMat
-            )
+            const vBar = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.4, 0.12), crossMat)
             group.add(vBar)
 
-            // Horizontal bar of the cross
-            const hBar = new THREE.Mesh(
-                new THREE.BoxGeometry(0.4, 0.12, 0.12),
-                crossMat
-            )
+            const hBar = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.12, 0.12), crossMat)
             hBar.position.y = 0.06
             group.add(hBar)
 
-            // Glow light
             const glow = new THREE.PointLight('#00ff66', 1.5, 4)
             glow.position.set(0, 0.2, 0)
             glow.castShadow = false
@@ -831,6 +624,5 @@ function _spawnHealthPickups(scene, healthPickups, doors, tagRooms) {
             count++
         }
     }
-
     console.log(`[MapSystem] ${count} health pickups placed`)
 }

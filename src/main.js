@@ -9,6 +9,7 @@ import { Lobby } from './lobby.js'
 import { AudioSystem } from './audio.js'
 import { Viewmodel } from './viewmodel.js'
 import { Biometrics } from './biometrics.js'
+import { AssetManager } from './assets.js'
 import * as THREE from 'three'
 
 const socket = io()
@@ -50,7 +51,7 @@ document.addEventListener('keydown', (e) => {
 })
 
 // ─── GAME START ───
-lobby.onGameStart = (assignedRole, assignedPeers) => {
+lobby.onGameStart = async (assignedRole, assignedPeers) => {
     role = assignedRole
     peers = assignedPeers  // array of { id, role }
 
@@ -60,10 +61,24 @@ lobby.onGameStart = (assignedRole, assignedPeers) => {
     // Try to init biometrics (will request camera permission)
     biometrics.init()
 
+    // Show loading percentage while assets load
+    const loadingBar = document.getElementById('loading-bar')
+    const loadingPct = document.getElementById('loading-pct')
+    if (loadingBar) loadingBar.style.display = 'block'
+    if (loadingPct) loadingPct.textContent = '0%'
+
+    // Pre-load all GLB models before building the map
+    const assetManager = new AssetManager()
+    await assetManager.loadAll()
+    if (loadingPct) loadingPct.textContent = '50%'
+
     const canvas = document.getElementById('game-canvas')
-    engine.init(canvas)
+    engine.init(canvas, assetManager)
+    if (loadingPct) loadingPct.textContent = '80%'
 
     engine.onLoadComplete = () => {
+        if (loadingPct) loadingPct.textContent = '100%'
+        if (loadingBar) loadingBar.style.display = 'none'
         player = new Player(engine.camera, engine)
 
         const spawn = role === 'hunter'
@@ -71,6 +86,10 @@ lobby.onGameStart = (assignedRole, assignedPeers) => {
             : engine.mapData?.spawnPrey
         player.setRole(role, spawn)
         engine.setRole(role)
+
+        // 1v1: whichever peer exists has the opposite role — track it so the
+        // prey can hide the hunter's body when their flashlight is off.
+        player.peerRole = peers[0]?.role ?? null
 
         fearSystem = new FearSystem()
         viewmodel = new Viewmodel(engine.camera, role)
@@ -116,6 +135,14 @@ lobby.onGameStart = (assignedRole, assignedPeers) => {
 socket.on('peerMove', (data) => {
     if (player) player.updatePeer(data)
     if (netGun && data.isPhasing !== undefined) netGun.setPeerPhasing(!!data.isPhasing)
+})
+
+socket.on('doorToggle', ({ x, z, isOpen }) => {
+    const changed = engine.applyRemoteDoor(x, z, isOpen)
+    if (changed) {
+        audio.playDoorCreak()
+        audio.playDoorThud(0)
+    }
 })
 
 socket.on('peerFear', (data) => {
@@ -262,7 +289,7 @@ function gameLoop() {
             netGun.setAccuracy(mods.netAccuracy ?? 1)
             netGun.update(dt)
         }
-        socket.volatile.emit('playerMove', player.serialize())
+        socket.volatile.emit('playerMove', { ...player.serialize(), flashlightOn: engine.flashlightOn })
     }
 
     if (viewmodel && player && !player.isHiding && !player.isPhasing) {
@@ -350,6 +377,7 @@ function gameLoop() {
                 audio.playDoorCreak()
                 audio.playDoorThud(0)
                 player.triggerShake(0.06)
+                socket.emit('doorToggle', toggled)
             } else {
                 const locker = engine.findNearestLocker(player.position)
                 if (locker) player.enterHide(locker)
