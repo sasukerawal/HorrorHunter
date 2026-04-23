@@ -7,7 +7,7 @@ import { VolumetricFlashlight } from './volumetricFlashlight.js'
 const FLASHLIGHT_BASE_INTENSITY = 16
 const FLASHLIGHT_BASE_ANGLE     = Math.PI / 7   // ~25 deg
 const FLASHLIGHT_BASE_DISTANCE  = 36
-const HUNTER_BASE_EXPOSURE      = 0.45   // darker - hunter must rely on flashlight
+const HUNTER_BASE_EXPOSURE      = 0.12   // hunter must rely on flashlight
 const TUNNEL_BPM_THRESHOLD      = 100
 const TUNNEL_BPM_FULL           = 160
 
@@ -19,10 +19,19 @@ export class Engine {
         this.ventZones       = []
         this.renderer        = null
         this.camera          = null
+        this._sceneTarget    = null
+        this._copyScene      = null
+        this._copyCamera     = null
+        this._copyMaterial   = null
+        this._copyMesh       = null
+        this._renderSize     = new THREE.Vector2()
         this.volumetric      = null   // VolumetricFlashlight (owns SpotLight + visible cone)
         this.flashlightOn    = false   // toggled per-role in setRole()
+        this._forcedFlashlightTimer   = 0
+        this._forcedFlashlightRestore = false
         this.ambientLight    = null
         this.hemisphereLight = null
+        this.moonLight       = null
         this.role            = null
         this.ghostLights     = []
         this.dustPoints      = null
@@ -60,6 +69,10 @@ export class Engine {
         // Health pickups
         this.healthPickups = []
 
+        // Cheap contact shadows
+        this._localBlobShadow = null
+        this._peerBlobShadow  = null
+
         // Extraction emergency
         this._emergencyActive = false
         this._emergencyLight  = null
@@ -71,12 +84,12 @@ export class Engine {
 
         this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' })
         this.renderer.setSize(window.innerWidth, window.innerHeight)
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25))
-        this.renderer.shadowMap.enabled = true
-        this.renderer.shadowMap.type    = THREE.PCFShadowMap // Faster than PCFSoft
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 0.85))
+        this.renderer.shadowMap.enabled = false
         this.renderer.setClearColor('#050505')
         this.renderer.toneMapping         = THREE.ACESFilmicToneMapping
         this.renderer.toneMappingExposure = 1.8
+        this._initDepthCompositeTarget()
 
         this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.05, 200)
         this.camera.position.set(0, 1.7, 0)
@@ -90,16 +103,17 @@ export class Engine {
         this.hemisphereLight = new THREE.HemisphereLight('#2244aa', '#3d1500', 0.8)
         this.scene.add(this.hemisphereLight)
 
-        const moon = new THREE.DirectionalLight('#cce0ff', 0.5)
-        moon.position.set(5, 12, -5)
-        moon.castShadow = false
-        this.scene.add(moon)
+        this.moonLight = new THREE.DirectionalLight('#cce0ff', 0.5)
+        this.moonLight.position.set(5, 12, -5)
+        this.moonLight.castShadow = false
+        this.scene.add(this.moonLight)
 
         this.volumetric = new VolumetricFlashlight(this.scene, this.camera)
 
         const ghostColors = ['#00ffcc', '#ff6600']
         ghostColors.forEach((color) => {
             const g = new THREE.PointLight(color, 0.4, 10)
+            g.userData.baseIntensity = 0.4
             this.scene.add(g)
             this.ghostLights.push({ light: g, offset: Math.random() * Math.PI * 2 })
         })
@@ -110,7 +124,8 @@ export class Engine {
             this.camera.aspect = window.innerWidth / window.innerHeight
             this.camera.updateProjectionMatrix()
             this.renderer.setSize(window.innerWidth, window.innerHeight)
-            this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25))
+            this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 0.85))
+            this._resizeDepthCompositeTarget()
         })
 
         // ── GENERATE MAP (pass assetManager so GLB props are placed) ──
@@ -196,20 +211,109 @@ export class Engine {
         this.scene.add(this.dustPoints)
     }
 
+    _initDepthCompositeTarget() {
+        this.renderer.getDrawingBufferSize(this._renderSize)
+        const width = Math.max(1, this._renderSize.x)
+        const height = Math.max(1, this._renderSize.y)
+
+        this._sceneTarget = new THREE.WebGLRenderTarget(width, height, {
+            minFilter: THREE.LinearFilter,
+            magFilter: THREE.LinearFilter,
+            format: THREE.RGBAFormat,
+            depthBuffer: true,
+            stencilBuffer: false,
+        })
+        this._sceneTarget.depthTexture = new THREE.DepthTexture(width, height)
+        this._sceneTarget.depthTexture.format = THREE.DepthFormat
+        this._sceneTarget.depthTexture.type = THREE.UnsignedIntType
+
+        this._copyScene = new THREE.Scene()
+        this._copyCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
+        this._copyMaterial = new THREE.MeshBasicMaterial({
+            map: this._sceneTarget.texture,
+            depthTest: false,
+            depthWrite: false,
+            toneMapped: false,
+        })
+        this._copyMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._copyMaterial)
+        this._copyMesh.frustumCulled = false
+        this._copyScene.add(this._copyMesh)
+    }
+
+    _resizeDepthCompositeTarget() {
+        if (!this.renderer || !this._sceneTarget) return
+        this.renderer.getDrawingBufferSize(this._renderSize)
+        const width = Math.max(1, this._renderSize.x)
+        const height = Math.max(1, this._renderSize.y)
+        this._sceneTarget.setSize(width, height)
+        this._sceneTarget.depthTexture.image.width = width
+        this._sceneTarget.depthTexture.image.height = height
+    }
+
     // ─────────────────────────────────────────────────────────────
     // FLASHLIGHT
     // ─────────────────────────────────────────────────────────────
     get flashlight() { return this.volumetric?.light ?? null }
 
     toggleFlashlight() {
+        if (this._forcedFlashlightTimer > 0) {
+            this.setFlashlightVisible(false)
+            return false
+        }
         this.flashlightOn = !this.flashlightOn
         this.setFlashlightVisible(this.flashlightOn)
         return this.flashlightOn
     }
 
     setFlashlightVisible(visible) {
+        if (visible && this._forcedFlashlightTimer > 0) visible = false
         this.flashlightOn = visible
         if (this.volumetric) this.volumetric.toggle(visible)
+    }
+
+    forceFlashlightOff(duration = 2.0) {
+        this._forcedFlashlightRestore = this.flashlightOn
+        this._forcedFlashlightTimer = Math.max(this._forcedFlashlightTimer, duration)
+        this.setFlashlightVisible(false)
+    }
+
+    _updateForcedFlashlight(dt) {
+        if (this._forcedFlashlightTimer <= 0) return
+        this._forcedFlashlightTimer = Math.max(0, this._forcedFlashlightTimer - dt)
+        if (this._forcedFlashlightTimer === 0) {
+            const shouldRestore = this._forcedFlashlightRestore
+            this._forcedFlashlightRestore = false
+            if (shouldRestore) this.setFlashlightVisible(true)
+        }
+    }
+
+    _createBlobShadow(radius = 0.42, opacity = 0.34) {
+        const geo = new THREE.CircleGeometry(radius, 24)
+        const mat = new THREE.MeshBasicMaterial({
+            color: '#000000',
+            transparent: true,
+            opacity,
+            depthWrite: false,
+        })
+        const mesh = new THREE.Mesh(geo, mat)
+        mesh.rotation.x = -Math.PI / 2
+        mesh.position.y = 0.012
+        mesh.renderOrder = -5
+        mesh.frustumCulled = false
+        mesh.userData.nonColliding = true
+        this.scene.add(mesh)
+        return mesh
+    }
+
+    updateBlobShadows(player) {
+        if (!player) return
+        if (!this._localBlobShadow) this._localBlobShadow = this._createBlobShadow(player.role === 'prey' ? 0.32 : 0.48, 0.28)
+        this._localBlobShadow.position.set(player.position.x, 0.012, player.position.z)
+        this._localBlobShadow.visible = !player.isHiding
+
+        if (!this._peerBlobShadow) this._peerBlobShadow = this._createBlobShadow(player.peerRole === 'prey' ? 0.30 : 0.46, 0.30)
+        this._peerBlobShadow.position.set(player.peerPosition.x, 0.012, player.peerPosition.z)
+        this._peerBlobShadow.visible = !!player.peerMesh?.visible && !player.peerIsHiding
     }
 
     /** Apply BPM/Fear distortion to the spotlight. Called from update(). */
@@ -254,6 +358,8 @@ export class Engine {
     // FRAME UPDATE
     // ─────────────────────────────────────────────────────────────
     update(elapsed, fearLevel = 0, dt = 0.016, bpm = 75) {
+        this._updateForcedFlashlight(dt)
+
         // Ghost lights — update every 3rd frame to save CPU/GPU uniform uploads.
         this._ghostFrameSkip = (this._ghostFrameSkip + 1) % 3
         if (this._ghostFrameSkip === 0) {
@@ -322,6 +428,8 @@ export class Engine {
             if (this.scene.fog)        this.scene.fog.density = 0.013
             if (this.ambientLight)     this.ambientLight.intensity = 1.2
             if (this.hemisphereLight)  this.hemisphereLight.intensity = 1.4
+            if (this.moonLight)        this.moonLight.intensity = 0.5
+            for (const { light } of this.ghostLights) light.intensity = light.userData.baseIntensity ?? 0.4
             this.renderer.toneMappingExposure = 2.6
             if (this.mapData?.roomLights) {
                 for (const { light } of this.mapData.roomLights) {
@@ -331,13 +439,15 @@ export class Engine {
             this.setFlashlightVisible(false)   // Prey starts WITHOUT flashlight
         } else {
             // Hunter — very dark, relies almost entirely on flashlight
-            if (this.scene.fog)        this.scene.fog.density = 0.055
-            if (this.ambientLight)     this.ambientLight.intensity = 0.08
-            if (this.hemisphereLight)  this.hemisphereLight.intensity = 0.10
+            if (this.scene.fog)        this.scene.fog.density = 0.095
+            if (this.ambientLight)     this.ambientLight.intensity = 0.0
+            if (this.hemisphereLight)  this.hemisphereLight.intensity = 0.0
+            if (this.moonLight)        this.moonLight.intensity = 0.0
+            for (const { light } of this.ghostLights) light.intensity = 0.015
             this.renderer.toneMappingExposure = HUNTER_BASE_EXPOSURE
             if (this.mapData?.roomLights) {
                 for (const { light } of this.mapData.roomLights) {
-                    if (light.userData) light.userData.flickerMultiplier = 0.28
+                    if (light.userData) light.userData.flickerMultiplier = 0.025
                 }
             }
             this.setFlashlightVisible(true)    // Hunter starts WITH flashlight
@@ -348,12 +458,32 @@ export class Engine {
         const scn = scene ?? this.scene
         const cam = camera ?? this.camera
 
-        // Pass 1: normal scene render to canvas.
-        this.renderer.setRenderTarget(null)
+        if (!this._sceneTarget) {
+            this.renderer.render(scn, cam)
+            return
+        }
+
+        this._resizeDepthCompositeTarget()
+
+        // Pass 1: render the lit scene into a color target with a sampleable depth texture.
+        this.renderer.setRenderTarget(this._sceneTarget)
+        this.renderer.clear()
         this.renderer.render(scn, cam)
 
-        // Pass 2: composite the volumetric cone on top (additive, no extra RT needed).
+        // Pass 2: copy the color target back to the canvas.
+        this.renderer.setRenderTarget(null)
+        this.renderer.clear()
+        this.renderer.render(this._copyScene, this._copyCamera)
+
+        // Pass 3: composite the volumetric cone, softened against the scene depth.
         if (this.volumetric?.isOn()) {
+            this.volumetric.setDepthTexture(
+                this._sceneTarget.depthTexture,
+                this._renderSize.x,
+                this._renderSize.y,
+                cam.near,
+                cam.far
+            )
             const prev = this.renderer.autoClear
             this.renderer.autoClear = false
             this.renderer.render(this.volumetric.fxScene, cam)

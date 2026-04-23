@@ -15,9 +15,8 @@
 // PIPELINE STAGES:
 //   A. Camera frame capture — we resize the video to a small canvas (96×72 px)
 //      for speed and privacy.
-//   B. Face detection (optional) — the browser's experimental FaceDetector API
-//      locates your face so we can sample only the forehead / cheek ROI.
-//      If FaceDetector is unavailable we fall back to a central fixed ROI.
+//   B. Face detection — uses MediaPipe FaceLandmarker (loaded lazily from CDN)
+//      when available; falls back to a fixed centre ROI otherwise.
 //   C. Skin-pixel classification — we skip pixels that don't look like skin
 //      (luminance too low/high, wrong hue), reducing noise from background.
 //   D. Chrominance pulse signal extraction — we compute
@@ -44,12 +43,20 @@
 const SAMPLE_RATE          = 15          // target samples per second
 const SAMPLE_INTERVAL      = 1 / SAMPLE_RATE
 const ESTIMATE_INTERVAL    = 1.0         // re-estimate BPM every 1 second
-const FACE_DETECT_INTERVAL = 0.8         // run FaceDetector every 0.8 s
+const FACE_DETECT_INTERVAL = 0.9         // run face detection every 0.9 s
 const BUFFER_SECONDS       = 12          // rolling buffer duration
 const MIN_ANALYSIS_SECONDS = 6           // minimum buffer before estimating
 const MIN_BPM              = 48
 const MAX_BPM              = 180
 const SMOOTH_ALPHA         = 0.85        // EMA weight for per-frame signal
+
+// MediaPipe FaceLandmarker CDN (pinned version for stability)
+const MP_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17'
+const MP_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'
+
+// Face landmark indices for forehead + cheek rPPG region
+// (forehead center, brow region, cheeks bilaterally)
+const FACE_ROI_LANDMARKS = [10, 9, 8, 107, 336, 116, 147, 187, 207, 345, 376, 411, 427]
 
 export class Biometrics {
     constructor() {
@@ -62,16 +69,18 @@ export class Biometrics {
         this._sampleTimer   = 0
         this._estimateTimer = 0
         this._detectTimer   = 0
-        this._detecting     = false
         this._frameBuffer   = []          // {time, value}[]
         this._smoothedSignal = null       // running EMA of the raw signal
 
         this._canvas    = null
         this._canvasCtx = null
-        this._faceDetector = null
         this._faceBox      = null
         this._lastFaceSeen = 0
         this._lastValidBPM = null
+
+        // MediaPipe FaceLandmarker (loaded lazily from CDN)
+        this._faceLandmarker      = null
+        this._faceLandmarkerReady = false
     }
 
     // ── PUBLIC ─────────────────────────────────────────────────────────────────
@@ -108,17 +117,13 @@ export class Biometrics {
             this._canvas.height = 72
             this._canvasCtx = this._canvas.getContext('2d', { willReadFrequently: true })
 
-            // Attempt to use the browser's FaceDetector API (Chrome / Edge only)
-            if ('FaceDetector' in window) {
-                try {
-                    this._faceDetector = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 1 })
-                } catch {
-                    this._faceDetector = null
-                }
-            }
-
             this.available = true
-            this._setIndicator(this._faceDetector ? 'CAM SEARCH FACE' : 'CAM ROI MODE')
+            this._setIndicator('CAM ROI — LOADING FACE AI…')
+
+            // Load MediaPipe FaceLandmarker in the background — rPPG starts
+            // immediately with a fixed ROI and upgrades once the model is ready.
+            this._initMediaPipe()
+
             return true
         } catch (err) {
             console.warn('[Biometrics] Camera unavailable:', err.message)
@@ -134,7 +139,7 @@ export class Biometrics {
 
         // ── Stage B: periodic face detection ──
         this._detectTimer += dt
-        if (this._faceDetector && this._detectTimer >= FACE_DETECT_INTERVAL) {
+        if (this._detectTimer >= FACE_DETECT_INTERVAL) {
             this._detectTimer = 0
             this._detectFace()
         }
@@ -181,43 +186,85 @@ export class Biometrics {
 
     destroy() {
         this.stream?.getTracks().forEach(t => t.stop())
+        try { this._faceLandmarker?.close() } catch {}
+        this._faceLandmarker      = null
+        this._faceLandmarkerReady = false
         this.available  = false
         this.currentBPM = null
         this.confidence = 0
         this._setIndicator('CAM OFF')
     }
 
+    // ── PRIVATE — MEDIAPIPE INIT ────────────────────────────────────────────────
+
+    async _initMediaPipe() {
+        try {
+            const { FaceLandmarker, FilesetResolver } = await import(`${MP_CDN}/vision_bundle.mjs`)
+            const vision = await FilesetResolver.forVisionTasks(`${MP_CDN}/wasm`)
+            this._faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: MP_MODEL,
+                    delegate: 'GPU',
+                },
+                runningMode: 'VIDEO',
+                numFaces: 1,
+                outputFaceBlendshapes: false,
+                outputFacialTransformationMatrixes: false,
+            })
+            this._faceLandmarkerReady = true
+            console.log('[Biometrics] MediaPipe FaceLandmarker ready')
+            this._setIndicator('CAM FACE LOCK — CALIBRATING…')
+        } catch (err) {
+            console.warn('[Biometrics] MediaPipe unavailable, using fixed ROI:', err.message)
+            this._faceLandmarkerReady = false
+        }
+    }
+
     // ── PRIVATE — STAGE B: FACE DETECTION ─────────────────────────────────────
 
-    async _detectFace() {
-        if (this._detecting || !this._faceDetector) return
-        this._detecting = true
+    _detectFace() {
+        if (!this._faceLandmarkerReady || !this._faceLandmarker) return
+        if (this.videoEl.readyState < 2) return
         try {
-            const faces = await this._faceDetector.detect(this.videoEl)
-            if (faces.length) {
-                const box = faces[0].boundingBox
-                const sx  = this._canvas.width  / (this.videoEl.videoWidth  || 1)
-                const sy  = this._canvas.height / (this.videoEl.videoHeight || 1)
-
-                // Crop to forehead + cheeks (top-centre 60% of face bounding box)
-                const fx = box.x * sx, fy = box.y * sy
-                const fw = box.width * sx, fh = box.height * sy
-
-                this._faceBox = {
-                    x: Math.max(0, fx + fw * 0.18),
-                    y: Math.max(0, fy + fh * 0.10),  // start higher (forehead)
-                    w: Math.max(8, fw * 0.64),
-                    h: Math.max(8, fh * 0.52),        // cover forehead + cheeks
+            const results = this._faceLandmarker.detectForVideo(this.videoEl, performance.now())
+            const landmarks = results.faceLandmarks?.[0]
+            if (landmarks) {
+                const roi = this._computeROIFromLandmarks(landmarks)
+                if (roi) {
+                    this._faceBox = roi
+                    this._lastFaceSeen = performance.now()
                 }
-                this._lastFaceSeen = performance.now()
             } else if (performance.now() - this._lastFaceSeen > 2000) {
-                this._faceBox = null  // lost face for >2 s — fall back to ROI
+                this._faceBox = null
             }
-        } catch {
-            this._faceDetector = null
-            this._faceBox      = null
-        } finally {
-            this._detecting = false
+        } catch (err) {
+            console.warn('[Biometrics] FaceLandmarker detect error:', err.message)
+            this._faceLandmarkerReady = false
+            this._faceBox = null
+        }
+    }
+
+    _computeROIFromLandmarks(landmarks) {
+        const w = this._canvas.width
+        const h = this._canvas.height
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+        for (const idx of FACE_ROI_LANDMARKS) {
+            const lm = landmarks[idx]
+            if (!lm) continue
+            const px = lm.x * w
+            const py = lm.y * h
+            if (px < minX) minX = px
+            if (py < minY) minY = py
+            if (px > maxX) maxX = px
+            if (py > maxY) maxY = py
+        }
+        if (!Number.isFinite(minX)) return null
+        const pad = 3
+        return {
+            x: Math.max(0, minX - pad),
+            y: Math.max(0, minY - pad),
+            w: Math.max(8, maxX - minX + pad * 2),
+            h: Math.max(8, maxY - minY + pad * 2),
         }
     }
 
@@ -362,11 +409,10 @@ export class Biometrics {
     _statusText() {
         if (!this.available) return 'CAM OFF'
         if (!this.currentBPM) {
-            return this._faceBox
-                ? `CAM FACE LOCK — CALIBRATING…`
-                : 'CAM ROI — CALIBRATING…'
+            if (this._faceLandmarkerReady && this._faceBox) return 'CAM FACE LOCK — CALIBRATING…'
+            return 'CAM ROI — CALIBRATING…'
         }
-        const src = this._faceBox ? 'FACE' : 'ROI'
+        const src = this._faceLandmarkerReady && this._faceBox ? 'MP' : (this._faceBox ? 'FACE' : 'ROI')
         const pct = Math.round(this.confidence * 100)
         return `PULSE ${this.currentBPM} BPM [${src} ${pct}%]`
     }

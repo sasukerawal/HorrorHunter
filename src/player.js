@@ -68,6 +68,9 @@ export class Player {
         // Camera shake
         this.shakeAmount    = 0
         this.shakeDecay     = 5
+        this.shakeTimer     = 0
+        this.shakeIntensity = 0
+        this.stunTimer      = 0
         this._groundRaycaster = new THREE.Raycaster()
         this._downVector      = new THREE.Vector3(0, -1, 0)
         this._moveDir         = new THREE.Vector3()
@@ -321,7 +324,19 @@ export class Player {
     }
 
     triggerShake(amount = 0.08) {
-        this.shakeAmount = Math.max(this.shakeAmount, amount)
+        this.shakeCamera(0.18, amount)
+    }
+
+    shakeCamera(duration = 0.35, intensity = 0.08) {
+        this.shakeTimer = Math.max(this.shakeTimer, duration)
+        this.shakeIntensity = Math.max(this.shakeIntensity, intensity)
+        this.shakeAmount = Math.max(this.shakeAmount, intensity)
+    }
+
+    stunHunter(duration = 2.0) {
+        if (this.role !== 'hunter') return
+        this.stunTimer = Math.max(this.stunTimer, duration)
+        this.velocity.set(0, 0, 0)
     }
 
     // ─── PHASE ABILITY (Prey only) ──────────────────────────────────
@@ -422,6 +437,7 @@ export class Player {
             this.stamina = Math.min(STAMINA_MAX, this.stamina + STAMINA_REGEN * dt)
         }
         if (this.phaseCooldown > 0) this.phaseCooldown = Math.max(0, this.phaseCooldown - dt)
+        if (this.stunTimer > 0) this.stunTimer = Math.max(0, this.stunTimer - dt)
 
         // Phase tick
         if (this.isPhasing) {
@@ -431,8 +447,15 @@ export class Player {
 
         // Frozen while hiding — only camera-shake decays
         if (this.isHiding) {
-            this._applyCameraShake(dt)
             this.camera.position.copy(this.position)
+            this._applyCameraShake(dt)
+            return
+        }
+
+        if (this.stunTimer > 0) {
+            this.velocity.set(0, 0, 0)
+            this.camera.position.copy(this.position)
+            this._applyCameraShake(dt)
             return
         }
 
@@ -525,7 +548,14 @@ export class Player {
     }
 
     _applyCameraShake(dt) {
-        if (this.shakeAmount > 0) {
+        if (this.shakeTimer > 0) {
+            const amount = this.shakeIntensity
+            this.camera.position.x += (Math.random() - 0.5) * amount
+            this.camera.position.y += (Math.random() - 0.5) * amount
+            this.camera.position.z += (Math.random() - 0.5) * amount * 0.45
+            this.shakeTimer = Math.max(0, this.shakeTimer - dt)
+            if (this.shakeTimer <= 0) this.shakeIntensity = 0
+        } else if (this.shakeAmount > 0) {
             this.camera.position.x += (Math.random() - 0.5) * this.shakeAmount
             this.camera.position.y += (Math.random() - 0.5) * this.shakeAmount
             this.camera.position.z += (Math.random() - 0.5) * this.shakeAmount * 0.4

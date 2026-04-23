@@ -141,6 +141,32 @@ io.on('connection', (socket) => {
         socket.to(socket.lobbyCode).emit('doorToggle', data)
     })
 
+    socket.on('voiceOffer', ({ targetId, description }) => {
+        if (!targetId || !description) return
+        io.to(targetId).emit('voiceOffer', { fromId: socket.id, description })
+    })
+
+    socket.on('voiceAnswer', ({ targetId, description }) => {
+        if (!targetId || !description) return
+        io.to(targetId).emit('voiceAnswer', { fromId: socket.id, description })
+    })
+
+    socket.on('voiceIceCandidate', ({ targetId, candidate }) => {
+        if (!targetId || !candidate) return
+        io.to(targetId).emit('voiceIceCandidate', { fromId: socket.id, candidate })
+    })
+
+    socket.on('voicePanic', ({ level }) => {
+        const code = socket.lobbyCode
+        const lobby = lobbies[code]
+        if (!lobby) return
+        const sender = lobby.players.find(p => p.id === socket.id)
+        if (!sender || sender.role !== 'prey') return
+        for (const player of lobby.players) {
+            if (player.role === 'hunter') io.to(player.id).emit('voicePanic', { fromId: socket.id, level })
+        }
+    })
+
     socket.on('netFired', (data) => {
         // Hunter fires net gun — broadcast to all prey
         socket.to(socket.lobbyCode).emit('netHit', { ...data, shooterId: socket.id })
@@ -223,7 +249,7 @@ io.on('connection', (socket) => {
     })
 })
 
-const PORT = 3001
+const PORT = Number(process.env.PORT || 3001)
 server.listen(PORT, () => {
     console.log(`\n🎃 BIO-HORROR server running on :${PORT}\n`)
 })

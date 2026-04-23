@@ -14,6 +14,9 @@ export class HUD {
 
         // New panels (added in index.html)
         this.vignetteEl     = document.getElementById('vignette')
+        this.jumpscareEl    = document.getElementById('jumpscare-overlay')
+        this.jumpscareImg   = document.getElementById('jumpscare-image')
+        this.voicePulseEl   = document.getElementById('voice-panic-pulse')
         this.staminaFillEl  = document.getElementById('stamina-fill')
         this.staminaWrapEl  = document.getElementById('stamina-wrap')
         this.phaseFillEl    = document.getElementById('phase-fill')
@@ -89,7 +92,49 @@ export class HUD {
         if (!this.vignetteEl) return
         const op = 0.55 + Math.min(0.4, fear * 0.55)
         this.vignetteEl.style.setProperty('--vignette-opacity', op.toFixed(2))
+        this.vignetteEl.style.setProperty('--vignette-clear-radius', fear > 0.7 ? '22%' : '38%')
+        this.vignetteEl.style.setProperty('--vignette-blood-opacity', fear > 0.7 ? '0.24' : '0')
         this.vignetteEl.classList.toggle('high', fear > 0.7)
+    }
+
+    updatePanicVignette(bpm = 75, role = 'prey', peerFear = 0) {
+        if (!this.vignetteEl) return
+        const clampedBpm = Math.max(60, Math.min(180, Number(bpm) || 75))
+        const panic = Math.max(0, Math.min(1, (clampedBpm - 85) / 60))
+        const radioBleed = role === 'hunter' ? Math.max(0, Math.min(1, peerFear)) * 0.35 : 0
+        const amount = role === 'prey' ? panic : radioBleed
+        const clear = 42 - amount * 24
+        const opacity = 0.50 + amount * 0.43
+        const blood = amount * 0.34
+
+        this.vignetteEl.style.setProperty('--vignette-clear-radius', `${clear.toFixed(1)}%`)
+        this.vignetteEl.style.setProperty('--vignette-opacity', opacity.toFixed(2))
+        this.vignetteEl.style.setProperty('--vignette-blood-opacity', blood.toFixed(2))
+        this.vignetteEl.classList.toggle('high', amount > 0.65)
+    }
+
+    showJumpscare(duration = 2000, imageIndex = 0) {
+        if (!this.jumpscareEl) return
+        if (this.jumpscareImg) {
+            const src = imageIndex % 2 === 0 ? '/models/scary%20face%201.jpg' : '/models/scary%20face%202.jpg'
+            this.jumpscareImg.src = src
+        }
+        this.jumpscareEl.classList.remove('hidden')
+        this.jumpscareEl.classList.add('active')
+        window.clearTimeout(this._jumpscareTimer)
+        this._jumpscareTimer = window.setTimeout(() => {
+            this.jumpscareEl.classList.remove('active')
+            this.jumpscareEl.classList.add('hidden')
+        }, duration)
+    }
+
+    showVoicePanicPulse(duration = 350) {
+        if (!this.voicePulseEl) return
+        this.voicePulseEl.classList.add('active')
+        window.clearTimeout(this._voicePulseTimer)
+        this._voicePulseTimer = window.setTimeout(() => {
+            this.voicePulseEl.classList.remove('active')
+        }, duration)
     }
 
     setFlashlightStatus(on) {

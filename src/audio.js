@@ -118,6 +118,86 @@ export class AudioSystem {
         osc.stop(this.ctx.currentTime + 0.3)
     }
 
+    playJumpscareStinger() {
+        if (!this.enabled) return
+        this._resume()
+        const now = this.ctx.currentTime
+
+        const curve = new Float32Array(512)
+        for (let i = 0; i < curve.length; i++) {
+            const x = (i / (curve.length - 1)) * 2 - 1
+            curve[i] = Math.tanh(x * 8)
+        }
+
+        const distortion = this.ctx.createWaveShaper()
+        distortion.curve = curve
+        distortion.oversample = '4x'
+
+        const filter = this.ctx.createBiquadFilter()
+        filter.type = 'bandpass'
+        filter.frequency.setValueAtTime(2600, now)
+        filter.frequency.exponentialRampToValueAtTime(780, now + 0.42)
+        filter.Q.value = 7
+
+        const gain = this.ctx.createGain()
+        gain.gain.setValueAtTime(0.001, now)
+        gain.gain.exponentialRampToValueAtTime(1.0, now + 0.018)
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.9)
+
+        const osc = this.ctx.createOscillator()
+        osc.type = 'sawtooth'
+        osc.frequency.setValueAtTime(1420, now)
+        osc.frequency.exponentialRampToValueAtTime(260, now + 0.72)
+
+        const noiseLength = Math.floor(this.ctx.sampleRate * 0.55)
+        const buffer = this.ctx.createBuffer(1, noiseLength, this.ctx.sampleRate)
+        const data = buffer.getChannelData(0)
+        for (let i = 0; i < noiseLength; i++) {
+            const fade = 1 - i / noiseLength
+            data[i] = (Math.random() * 2 - 1) * fade
+        }
+        const noise = this.ctx.createBufferSource()
+        noise.buffer = buffer
+
+        const noiseGain = this.ctx.createGain()
+        noiseGain.gain.setValueAtTime(0.65, now)
+        noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.45)
+
+        osc.connect(distortion)
+        distortion.connect(filter)
+        filter.connect(gain)
+        gain.connect(this.masterGain)
+
+        noise.connect(noiseGain)
+        noiseGain.connect(filter)
+
+        osc.start(now)
+        osc.stop(now + 0.9)
+        noise.start(now)
+        noise.stop(now + 0.55)
+    }
+
+    playVoicePanicCue() {
+        if (!this.enabled) return
+        this._resume()
+        const now = this.ctx.currentTime
+        const osc = this.ctx.createOscillator()
+        const gain = this.ctx.createGain()
+        const filter = this.ctx.createBiquadFilter()
+        osc.type = 'triangle'
+        osc.frequency.setValueAtTime(620, now)
+        osc.frequency.exponentialRampToValueAtTime(180, now + 0.28)
+        filter.type = 'bandpass'
+        filter.frequency.value = 900
+        gain.gain.setValueAtTime(0.35, now)
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35)
+        osc.connect(filter)
+        filter.connect(gain)
+        gain.connect(this.masterGain)
+        osc.start(now)
+        osc.stop(now + 0.35)
+    }
+
     startAmbientDrone() {
         if (!this.enabled) return
         this._resume()

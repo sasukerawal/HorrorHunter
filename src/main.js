@@ -10,6 +10,7 @@ import { AudioSystem } from './audio.js'
 import { Viewmodel } from './viewmodel.js'
 import { Biometrics } from './biometrics.js'
 import { AssetManager } from './assets.js'
+import { VoiceChat } from './voice.js'
 import * as THREE from 'three'
 
 const socket = io()
@@ -19,6 +20,7 @@ const hud = new HUD()
 const lobby = new Lobby(socket)
 const audio = new AudioSystem()
 const biometrics = new Biometrics()
+const voice = new VoiceChat(socket, audio)
 
 let player = null
 let netGun = null
@@ -32,6 +34,8 @@ let extractionEmergencyTriggered = false
 
 const CATCH_DISTANCE = 1.8
 const CATCH_FOV = 0.7
+const JUMPSCARE_DISTANCE = 2.4
+const JUMPSCARE_COOLDOWN = 18
 
 let extractionTimer = 0
 const EXTRACTION_REQUIRED = 5
@@ -40,6 +44,7 @@ const EXTRACTION_REQUIRED = 5
 let peerFear = 0
 let peerBPM  = 75
 const doorPromptPos = new THREE.Vector3()
+let jumpscareCooldown = 0
 
 // E (interact) and F (flashlight) — single key-edge handler
 let eKeyPressed = false
@@ -49,6 +54,14 @@ document.addEventListener('keydown', (e) => {
     if (e.code === 'KeyE') eKeyPressed = true
     if (e.code === 'KeyF') fKeyPressed = true
 })
+
+voice.onPanicCue = () => {
+    const dist = player ? player.getPeerDistance() : Infinity
+    if (dist > 22) return
+    hud.showVoicePanicPulse()
+    audio.playVoicePanicCue()
+    if (player) player.triggerShake(0.035)
+}
 
 // ─── GAME START ───
 lobby.onGameStart = async (assignedRole, assignedPeers) => {
@@ -60,6 +73,7 @@ lobby.onGameStart = async (assignedRole, assignedPeers) => {
 
     // Try to init biometrics (will request camera permission)
     biometrics.init()
+    voice.start(role, peers)
 
     // Show loading percentage while assets load
     const loadingBar = document.getElementById('loading-bar')
@@ -256,6 +270,17 @@ function _spawnCaughtNet(camera, peerMesh) {
     if (peerMesh) { netMesh.position.set(0, 0.3, 0); peerMesh.add(netMesh) }
 }
 
+function triggerHunterJumpscare() {
+    if (role !== 'hunter' || !player || jumpscareCooldown > 0) return
+    jumpscareCooldown = JUMPSCARE_COOLDOWN
+    audio.playJumpscareStinger()
+    hud.showJumpscare(2000, Math.random() > 0.5 ? 1 : 0)
+    player.stunHunter(2.0)
+    player.shakeCamera(2.0, 0.32)
+    engine.forceFlashlightOff(2.0)
+    hud.setFlashlightStatus(false)
+}
+
 // ─── GAME LOOP ───
 function gameLoop() {
     requestAnimationFrame(gameLoop)
@@ -263,6 +288,7 @@ function gameLoop() {
 
     const dt = Math.min(engine.clock.getDelta(), 0.05)
     elapsed += dt
+    if (jumpscareCooldown > 0) jumpscareCooldown = Math.max(0, jumpscareCooldown - dt)
 
     // Update biometrics
     biometrics.update(dt)
@@ -297,6 +323,7 @@ function gameLoop() {
     }
 
     engine.update(elapsed, flashlightFear, dt, flashlightBPM)
+    if (role === 'hunter') hud.setFlashlightStatus(engine.flashlightOn)
 
     // Occlusion culling only does visibility work on room changes or door state changes.
     if (player) {
@@ -333,6 +360,17 @@ function gameLoop() {
         if (hit && hit.distance < peerDist) isLineOfSight = false
     }
     audio.update(dt, localFear, moving, localBPM, peerDist, isLineOfSight)
+    voice.update(dt, peerDist, isLineOfSight)
+
+    if (
+        role === 'hunter' &&
+        player &&
+        peerDist < JUMPSCARE_DISTANCE &&
+        !player.peerIsPhasing &&
+        (peerFear > 0.55 || peerBPM >= 105)
+    ) {
+        triggerHunterJumpscare()
+    }
 
     hud.update(dt, localFear, localBPM)
 
@@ -344,8 +382,8 @@ function gameLoop() {
         canvas.classList.toggle('high-panic', localFear > 0.8)
     }
 
-    // Vignette: Prey sees own fear darken; Hunter sees peer fear (radio bleed)
-    hud.setVignetteFear(role === 'prey' ? localFear : peerFear)
+    // Vignette: Prey gets BPM tunnel vision; Hunter gets weaker peer-fear radio bleed.
+    hud.updatePanicVignette(role === 'prey' ? localBPM : peerBPM, role, peerFear)
 
     // Hunter crosshair bloom from prey's fear
     if (role === 'hunter' && netGun) hud.setCrosshairBloom(netGun.getBloom())
@@ -450,6 +488,8 @@ function gameLoop() {
             checkHunterCatch()
         }
     }
+
+    if (player) engine.updateBlobShadows(player)
 
     engine.render(engine.scene, engine.camera)
 }

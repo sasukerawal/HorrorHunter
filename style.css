@@ -51,6 +51,51 @@ body {
   z-index: 80;
 }
 
+#jumpscare-overlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #000;
+  pointer-events: none;
+  z-index: 180;
+  opacity: 0;
+  transform: scale(1.08);
+}
+
+#jumpscare-overlay.active {
+  opacity: 1;
+  animation: jumpscareImpact 0.12s steps(2) infinite;
+}
+
+#jumpscare-image {
+  width: min(100vw, 980px);
+  height: min(100vh, 720px);
+  object-fit: contain;
+  filter: contrast(1.55) saturate(0.25) brightness(1.1) drop-shadow(0 0 40px rgba(255, 0, 40, 0.85));
+}
+
+#voice-panic-pulse {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 75;
+  opacity: 0;
+  background: radial-gradient(circle at center, transparent 28%, rgba(255, 0, 60, 0.35) 58%, transparent 78%);
+  transition: opacity 0.18s linear;
+}
+
+#voice-panic-pulse.active {
+  opacity: 1;
+}
+
+@keyframes jumpscareImpact {
+  0%   { transform: scale(1.08) translate(0, 0); filter: contrast(1.2); }
+  35%  { transform: scale(1.16) translate(-9px, 5px); filter: contrast(1.7) hue-rotate(-8deg); }
+  70%  { transform: scale(1.11) translate(8px, -6px); filter: contrast(1.45) hue-rotate(8deg); }
+  100% { transform: scale(1.14) translate(-3px, 4px); filter: contrast(1.6); }
+}
+
 /* ==================== LOBBY ==================== */
 #ui-overlay {
   position: fixed;
@@ -520,10 +565,13 @@ body::after {
 /* ==================== VIGNETTE — opacity driven by Prey fear ==================== */
 #vignette {
   --vignette-opacity: 0.55;
+  --vignette-clear-radius: 38%;
+  --vignette-blood-opacity: 0;
   position: fixed;
   inset: 0;
   background: radial-gradient(ellipse at center,
-      transparent 38%,
+      transparent var(--vignette-clear-radius),
+      rgba(40, 0, 0, var(--vignette-blood-opacity)) 58%,
       rgba(0, 0, 0, var(--vignette-opacity)) 100%);
   pointer-events: none;
   z-index: 60;
@@ -532,8 +580,8 @@ body::after {
 
 #vignette.high {
   background: radial-gradient(ellipse at center,
-      transparent 22%,
-      rgba(40, 0, 0, calc(var(--vignette-opacity) * 0.6)) 55%,
+      transparent var(--vignette-clear-radius),
+      rgba(40, 0, 0, calc(var(--vignette-opacity) * 0.6 + var(--vignette-blood-opacity))) 55%,
       rgba(0, 0, 0, var(--vignette-opacity)) 100%);
 }
 

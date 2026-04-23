@@ -1,4 +1,4 @@
-// src/volumetricFlashlight.js — SpotLight + visible volumetric cone (Fresnel, attenuation, soft-particles)
+// src/volumetricFlashlight.js — SpotLight + visible volumetric cone with depth-softened mist
 import * as THREE from 'three'
 
 const BEAM_LENGTH    = 36
@@ -6,59 +6,102 @@ const BEAM_ANGLE     = Math.PI / 7
 const BASE_INTENSITY = 16
 
 const VOLUMETRIC_VS = /* glsl */`
-    varying vec3 vViewPos;
-    varying vec3 vNormal;
     varying vec3 vLocalPos;
+    varying vec3 vWorldPos;
+    varying vec3 vViewPos;
+    varying vec3 vViewNormal;
 
     void main() {
-        vec4 viewPos = viewMatrix * modelMatrix * vec4(position, 1.0);
-        vViewPos  = viewPos.xyz;
         vLocalPos = position;
-        vNormal   = normalize(normalMatrix * normal);
+        vec4 worldPos = modelMatrix * vec4(position, 1.0);
+        vec4 viewPos = viewMatrix * worldPos;
+        vWorldPos = worldPos.xyz;
+        vViewPos = viewPos.xyz;
+        vViewNormal = normalize(normalMatrix * normal);
         gl_Position = projectionMatrix * viewPos;
     }
 `
 
 const VOLUMETRIC_FS = /* glsl */`
+    #include <packing>
+
     uniform float uTime;
-    uniform float uOpacity;
+    uniform float uIntensity;
+    uniform float uRange;
+    uniform float uFear;
     uniform float uFlicker;
-    uniform float uFearLevel;
-    uniform float uLength;
+    uniform float uCameraNear;
+    uniform float uCameraFar;
+    uniform float uSoftness;
     uniform vec3  uColor;
+    uniform vec2  uResolution;
+    uniform sampler2D tDepth;
 
-    varying vec3 vViewPos;
-    varying vec3 vNormal;
     varying vec3 vLocalPos;
+    varying vec3 vWorldPos;
+    varying vec3 vViewPos;
+    varying vec3 vViewNormal;
 
-    float hash(vec3 p) {
-        p = fract(p * vec3(443.897, 441.423, 437.195));
-        p += dot(p, p.yxz + 19.19);
-        return fract((p.x + p.y) * p.z);
+    float hash(vec2 p) {
+        p = fract(p * vec2(123.34, 456.21));
+        p += dot(p, p + 45.32);
+        return fract(p.x * p.y);
+    }
+
+    float noise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+
+        float a = hash(i);
+        float b = hash(i + vec2(1.0, 0.0));
+        float c = hash(i + vec2(0.0, 1.0));
+        float d = hash(i + vec2(1.0, 1.0));
+
+        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
     }
 
     void main() {
-        float beamDist = clamp(-vLocalPos.z / uLength, 0.0, 1.0);
+        float beamT = clamp(-vLocalPos.z / uRange, 0.0, 1.0);
 
-        // Attenuation — fades with distance from the lens.
-        float atten = pow(1.0 - beamDist, 1.6);
+        // Distance attenuation: dense at the lens, fading toward the beam end.
+        float distanceFade = pow(1.0 - beamT, 1.55);
+        float lensFade = smoothstep(0.02, 0.11, beamT);
 
-        // Fresnel/rim — silhouette edges stay lit, centre transparent.
-        vec3  viewDir = normalize(-vViewPos);
-        float facing  = clamp(abs(dot(viewDir, vNormal)), 0.0, 1.0);
-        float rim     = pow(1.0 - facing, 1.8);
+        // Fresnel/rim: direct views are clearer; edges hold the visible mist.
+        vec3 viewDir = normalize(-vViewPos);
+        float facing = clamp(abs(dot(viewDir, normalize(vViewNormal))), 0.0, 1.0);
+        float rim = pow(1.0 - facing, 1.65);
+        float core = pow(facing, 4.0) * 0.16;
 
-        // Drifting dust bands.
-        vec3  sp   = vec3(vLocalPos.x, vLocalPos.y, vLocalPos.z * 0.2) * 2.0
-                   + vec3(uTime * 0.25, -uTime * 0.4, uTime * 0.15);
-        float dust = mix(0.78, 1.15, hash(floor(sp * 6.0)));
+        // Animated dust/mist. Two scales avoid a repeating texture look.
+        vec2 driftA = vWorldPos.xz * 1.8 + vec2(uTime * 0.22, -uTime * 0.17);
+        vec2 driftB = vec2(vWorldPos.y * 2.7 - uTime * 0.31, vLocalPos.z * 0.13 + uTime * 0.12);
+        float dustA = noise(driftA);
+        float dustB = noise(driftB);
+        float dust = mix(0.72, 1.18, dustA * 0.65 + dustB * 0.35);
+
+        // Thin rolling bands inside the cone, subtle enough to read as particles.
+        float bands = 0.88 + 0.12 * sin(vLocalPos.z * 1.15 + uTime * 3.2 + dustA * 5.0);
 
         // Fear micro-flicker.
-        float fearFlick = 1.0 - uFearLevel * 0.25 *
-                          (0.5 + 0.5 * sin(uTime * 55.0 + vLocalPos.x * 9.0 + vLocalPos.y * 11.0));
+        float fearFlicker = 1.0 - uFear * 0.32 *
+            (0.5 + 0.5 * sin(uTime * 63.0 + vLocalPos.x * 10.0 + vLocalPos.y * 13.0));
 
-        float alpha = atten * rim * uOpacity * uFlicker * fearFlick;
-        gl_FragColor = vec4(uColor * dust * alpha, alpha);
+        // Soft-particle depth fade. This keeps the beam from hard-clipping
+        // through walls by fading as its fragment approaches scene geometry.
+        vec2 uv = gl_FragCoord.xy / uResolution;
+        float sceneDepth = texture2D(tDepth, uv).x;
+        float sceneViewZ = perspectiveDepthToViewZ(sceneDepth, uCameraNear, uCameraFar);
+        float beamViewZ = vViewPos.z;
+        float softParticle = smoothstep(0.0, uSoftness, beamViewZ - sceneViewZ);
+
+        float mist = distanceFade * lensFade * (rim + core) * dust * bands * fearFlicker;
+        float alpha = mist * softParticle * uIntensity * uFlicker;
+        alpha = clamp(alpha, 0.0, 0.72);
+
+        vec3 color = uColor * (0.78 + rim * 0.65 + dust * 0.20);
+        gl_FragColor = vec4(color * alpha, alpha);
     }
 `
 
@@ -70,9 +113,6 @@ export class VolumetricFlashlight {
         // ───── Scene illumination (real spotlight) ─────
         this.light = new THREE.SpotLight('#fff5e0', BASE_INTENSITY, BEAM_LENGTH, BEAM_ANGLE, 0.3, 1.8)
         this.light.position.set(0, -0.03, 0)
-        this.light.castShadow = true
-        this.light.shadow.mapSize.set(256, 256)
-        this.light.shadow.camera.far = BEAM_LENGTH
         camera.add(this.light)
         camera.add(this.light.target)
         this.light.target.position.set(0, 0, -10)
@@ -88,12 +128,17 @@ export class VolumetricFlashlight {
         geo.rotateX(Math.PI / 2)                // axis along -Z (camera forward)
 
         this.uniforms = {
-            uTime:     { value: 0 },
-            uOpacity:  { value: 0.55 },
-            uFlicker:  { value: 1.0 },
-            uFearLevel:{ value: 0.0 },
-            uLength:   { value: BEAM_LENGTH },
-            uColor:    { value: new THREE.Color('#ffe9bd') },
+            uTime:      { value: 0 },
+            uColor:     { value: new THREE.Color('#ffe9bd') },
+            uIntensity: { value: 1.0 },
+            uRange:     { value: BEAM_LENGTH },
+            uFear:      { value: 0.0 },
+            uFlicker:   { value: 1.0 },
+            uCameraNear:{ value: camera.near },
+            uCameraFar: { value: camera.far },
+            uSoftness:  { value: 2.25 },
+            uResolution:{ value: new THREE.Vector2(1, 1) },
+            tDepth:     { value: null },
         }
 
         this.material = new THREE.ShaderMaterial({
@@ -102,7 +147,7 @@ export class VolumetricFlashlight {
             fragmentShader: VOLUMETRIC_FS,
             transparent:    true,
             depthWrite:     false,
-            depthTest:      true,
+            depthTest:      false,
             blending:       THREE.AdditiveBlending,
             side:           THREE.DoubleSide,
         })
@@ -121,10 +166,18 @@ export class VolumetricFlashlight {
         this._currentFlicker = 1.0
     }
 
+    setDepthTexture(depthTexture, width, height, near = this.camera.near, far = this.camera.far) {
+        this.uniforms.tDepth.value = depthTexture
+        this.uniforms.uResolution.value.set(Math.max(1, width), Math.max(1, height))
+        this.uniforms.uCameraNear.value = near
+        this.uniforms.uCameraFar.value = far
+    }
+
     update(delta, fearLevel = 0) {
         this._timeAcc += delta
         this.uniforms.uTime.value = this._timeAcc
-        this.uniforms.uFearLevel.value = fearLevel
+        this.uniforms.uFear.value = fearLevel
+        this.uniforms.uIntensity.value = 0.85 + fearLevel * 0.28
 
         if (fearLevel > 0.8) {
             this._flickerTimer += delta
