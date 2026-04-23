@@ -4,10 +4,10 @@ import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLigh
 import { generateMap } from './map.js'
 import { VolumetricFlashlight } from './volumetricFlashlight.js'
 
-const FLASHLIGHT_BASE_INTENSITY = 16
-const FLASHLIGHT_BASE_ANGLE     = Math.PI / 7   // ~25 deg
-const FLASHLIGHT_BASE_DISTANCE  = 36
-const HUNTER_BASE_EXPOSURE      = 0.12   // hunter must rely on flashlight
+const FLASHLIGHT_BASE_INTENSITY = 40             // bright enough to fill the cone at 0.85 exposure
+const FLASHLIGHT_BASE_ANGLE     = Math.PI / 7   // ~25.7 deg
+const FLASHLIGHT_BASE_DISTANCE  = 40
+const HUNTER_BASE_EXPOSURE      = 0.85           // dark world; flashlight punches through
 const TUNNEL_BPM_THRESHOLD      = 100
 const TUNNEL_BPM_FULL           = 160
 
@@ -19,12 +19,6 @@ export class Engine {
         this.ventZones       = []
         this.renderer        = null
         this.camera          = null
-        this._sceneTarget    = null
-        this._copyScene      = null
-        this._copyCamera     = null
-        this._copyMaterial   = null
-        this._copyMesh       = null
-        this._renderSize     = new THREE.Vector2()
         this.volumetric      = null   // VolumetricFlashlight (owns SpotLight + visible cone)
         this.flashlightOn    = false   // toggled per-role in setRole()
         this._forcedFlashlightTimer   = 0
@@ -89,7 +83,6 @@ export class Engine {
         this.renderer.setClearColor('#050505')
         this.renderer.toneMapping         = THREE.ACESFilmicToneMapping
         this.renderer.toneMappingExposure = 1.8
-        this._initDepthCompositeTarget()
 
         this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.05, 200)
         this.camera.position.set(0, 1.7, 0)
@@ -125,7 +118,6 @@ export class Engine {
             this.camera.updateProjectionMatrix()
             this.renderer.setSize(window.innerWidth, window.innerHeight)
             this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 0.85))
-            this._resizeDepthCompositeTarget()
         })
 
         // ── GENERATE MAP (pass assetManager so GLB props are placed) ──
@@ -209,45 +201,6 @@ export class Engine {
         this.dustPoints = new THREE.Points(geo, mat)
         this.dustPoints.frustumCulled = false
         this.scene.add(this.dustPoints)
-    }
-
-    _initDepthCompositeTarget() {
-        this.renderer.getDrawingBufferSize(this._renderSize)
-        const width = Math.max(1, this._renderSize.x)
-        const height = Math.max(1, this._renderSize.y)
-
-        this._sceneTarget = new THREE.WebGLRenderTarget(width, height, {
-            minFilter: THREE.LinearFilter,
-            magFilter: THREE.LinearFilter,
-            format: THREE.RGBAFormat,
-            depthBuffer: true,
-            stencilBuffer: false,
-        })
-        this._sceneTarget.depthTexture = new THREE.DepthTexture(width, height)
-        this._sceneTarget.depthTexture.format = THREE.DepthFormat
-        this._sceneTarget.depthTexture.type = THREE.UnsignedIntType
-
-        this._copyScene = new THREE.Scene()
-        this._copyCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
-        this._copyMaterial = new THREE.MeshBasicMaterial({
-            map: this._sceneTarget.texture,
-            depthTest: false,
-            depthWrite: false,
-            toneMapped: false,
-        })
-        this._copyMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._copyMaterial)
-        this._copyMesh.frustumCulled = false
-        this._copyScene.add(this._copyMesh)
-    }
-
-    _resizeDepthCompositeTarget() {
-        if (!this.renderer || !this._sceneTarget) return
-        this.renderer.getDrawingBufferSize(this._renderSize)
-        const width = Math.max(1, this._renderSize.x)
-        const height = Math.max(1, this._renderSize.y)
-        this._sceneTarget.setSize(width, height)
-        this._sceneTarget.depthTexture.image.width = width
-        this._sceneTarget.depthTexture.image.height = height
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -438,16 +391,18 @@ export class Engine {
             }
             this.setFlashlightVisible(false)   // Prey starts WITHOUT flashlight
         } else {
-            // Hunter — very dark, relies almost entirely on flashlight
-            if (this.scene.fog)        this.scene.fog.density = 0.095
-            if (this.ambientLight)     this.ambientLight.intensity = 0.0
+            // Hunter — world is dark; only the flashlight cone reveals geometry.
+            // Fog at 0.055 keeps distant rooms black without cutting off the 40-unit beam.
+            // A hair of ambient (0.04) lets the hunter barely read surfaces right in front.
+            if (this.scene.fog)        this.scene.fog.density = 0.055
+            if (this.ambientLight)     this.ambientLight.intensity = 0.04
             if (this.hemisphereLight)  this.hemisphereLight.intensity = 0.0
             if (this.moonLight)        this.moonLight.intensity = 0.0
-            for (const { light } of this.ghostLights) light.intensity = 0.015
+            for (const { light } of this.ghostLights) light.intensity = 0.008
             this.renderer.toneMappingExposure = HUNTER_BASE_EXPOSURE
             if (this.mapData?.roomLights) {
                 for (const { light } of this.mapData.roomLights) {
-                    if (light.userData) light.userData.flickerMultiplier = 0.025
+                    if (light.userData) light.userData.flickerMultiplier = 0.015
                 }
             }
             this.setFlashlightVisible(true)    // Hunter starts WITH flashlight
@@ -458,32 +413,12 @@ export class Engine {
         const scn = scene ?? this.scene
         const cam = camera ?? this.camera
 
-        if (!this._sceneTarget) {
-            this.renderer.render(scn, cam)
-            return
-        }
-
-        this._resizeDepthCompositeTarget()
-
-        // Pass 1: render the lit scene into a color target with a sampleable depth texture.
-        this.renderer.setRenderTarget(this._sceneTarget)
-        this.renderer.clear()
+        // Pass 1: scene → canvas (depth buffer stays on the default framebuffer).
+        this.renderer.setRenderTarget(null)
         this.renderer.render(scn, cam)
 
-        // Pass 2: copy the color target back to the canvas.
-        this.renderer.setRenderTarget(null)
-        this.renderer.clear()
-        this.renderer.render(this._copyScene, this._copyCamera)
-
-        // Pass 3: composite the volumetric cone, softened against the scene depth.
+        // Pass 2: volumetric cone composited on top (additive, no depth write).
         if (this.volumetric?.isOn()) {
-            this.volumetric.setDepthTexture(
-                this._sceneTarget.depthTexture,
-                this._renderSize.x,
-                this._renderSize.y,
-                cam.near,
-                cam.far
-            )
             const prev = this.renderer.autoClear
             this.renderer.autoClear = false
             this.renderer.render(this.volumetric.fxScene, cam)
