@@ -43,7 +43,9 @@ const EXTRACTION_REQUIRED = 5
 // Peer state mirrored from socket
 let peerFear = 0
 let peerBPM  = 75
-const doorPromptPos = new THREE.Vector3()
+const doorPromptPos  = new THREE.Vector3()
+const _catchToPrey   = new THREE.Vector3()
+const _catchFacing   = new THREE.Vector3()
 let jumpscareCooldown = 0
 
 // E (interact) and F (flashlight) — single key-edge handler
@@ -55,12 +57,12 @@ document.addEventListener('keydown', (e) => {
     if (e.code === 'KeyF') fKeyPressed = true
 })
 
-voice.onPanicCue = () => {
+voice.onPanicCue = (_fromId, type = 'panic') => {
     const dist = player ? player.getPeerDistance() : Infinity
     if (dist > 22) return
     hud.showVoicePanicPulse()
     audio.playVoicePanicCue()
-    if (player) player.triggerShake(0.035)
+    if (player) player.triggerShake(type === 'breathing' ? 0.018 : 0.035)
 }
 
 // ─── GAME START ───
@@ -141,6 +143,7 @@ lobby.onGameStart = async (assignedRole, assignedPeers) => {
         hud.start(role)
         hud.setFlashlightStatus(engine.flashlightOn)
         gameRunning = true
+        setupMobileControls()
         gameLoop()
     }
 }
@@ -241,6 +244,11 @@ socket.on('peerDisconnected', ({ id }) => {
 
 let fearSyncTimer = 0
 let catchCheckTimer = 0
+const systemTimers = { voice: 0, bpm: 0 }
+let cachedPeerLineOfSight = true
+const losFrom = new THREE.Vector3()
+const losTo = new THREE.Vector3()
+const losDir = new THREE.Vector3()
 
 function checkHunterCatch() {
     if (role !== 'hunter' || !player) return
@@ -248,10 +256,9 @@ function checkHunterCatch() {
     if (player.peerIsPhasing || player.peerIsHiding) return
     const dist = player.getPeerDistance()
     if (dist > CATCH_DISTANCE) return
-    const toPrey = player.peerPosition.clone().sub(player.position).normalize()
-    const facing = new THREE.Vector3()
-    engine.camera.getWorldDirection(facing)
-    if (facing.dot(toPrey) >= CATCH_FOV) {
+    _catchToPrey.subVectors(player.peerPosition, player.position).normalize()
+    engine.camera.getWorldDirection(_catchFacing)
+    if (_catchFacing.dot(_catchToPrey) >= CATCH_FOV) {
         // In HP mode, proximity catch is optional — net is the primary weapon
         // But we can still do a melee grab at very close range
         if (dist < 1.0) {
@@ -281,6 +288,125 @@ function triggerHunterJumpscare() {
     hud.setFlashlightStatus(false)
 }
 
+// ─── MOBILE CONTROLS ───
+function setupMobileControls() {
+    if (!('ontouchstart' in window)) return
+    const mc = document.getElementById('mobile-controls')
+    if (!mc) return
+    mc.classList.remove('hidden')
+
+    // Show role-specific buttons
+    if (role === 'prey') {
+        document.getElementById('m-phase')?.classList.remove('hidden')
+    } else {
+        document.getElementById('m-flashlight')?.classList.remove('hidden')
+    }
+
+    // ── Left joystick ──
+    const joyZone = document.getElementById('joy-left-zone')
+    const joyKnob = document.getElementById('joy-left-knob')
+    const JOY_R   = 52
+    let joyId = -1, joyOx = 0, joyOy = 0
+
+    joyZone?.addEventListener('touchstart', e => {
+        e.preventDefault()
+        if (joyId !== -1) return
+        const t = e.changedTouches[0]
+        joyId = t.identifier
+        joyOx = t.clientX
+        joyOy = t.clientY
+    }, { passive: false })
+
+    document.addEventListener('touchmove', e => {
+        for (const t of e.changedTouches) {
+            if (t.identifier !== joyId || !player) continue
+            e.preventDefault()
+            const dx = t.clientX - joyOx
+            const dy = t.clientY - joyOy
+            const len = Math.hypot(dx, dy) || 1
+            const nx  = len > JOY_R ? (dx / len) * JOY_R : dx
+            const ny  = len > JOY_R ? (dy / len) * JOY_R : dy
+            if (joyKnob) joyKnob.style.transform = `translate(calc(-50% + ${nx}px), calc(-50% + ${ny}px))`
+            const fx = dx / Math.max(len, JOY_R)
+            const fy = dy / Math.max(len, JOY_R)
+            player.keys.w = fy < -0.3
+            player.keys.s = fy >  0.3
+            player.keys.a = fx < -0.3
+            player.keys.d = fx >  0.3
+        }
+    }, { passive: false })
+
+    const endJoy = e => {
+        for (const t of e.changedTouches) {
+            if (t.identifier !== joyId) continue
+            joyId = -1
+            if (joyKnob) joyKnob.style.transform = 'translate(-50%, -50%)'
+            if (player) { player.keys.w = player.keys.a = player.keys.s = player.keys.d = false }
+        }
+    }
+    document.addEventListener('touchend',    endJoy)
+    document.addEventListener('touchcancel', endJoy)
+
+    // ── Right zone: look + tap-to-shoot ──
+    const lookZone = document.getElementById('look-zone')
+    let lookId = -1, lx = 0, ly = 0, lookMoved = 0, lookStart = 0
+
+    lookZone?.addEventListener('touchstart', e => {
+        e.preventDefault()
+        if (lookId !== -1) return
+        const t = e.changedTouches[0]
+        lookId    = t.identifier
+        lx        = t.clientX
+        ly        = t.clientY
+        lookMoved = 0
+        lookStart = Date.now()
+    }, { passive: false })
+
+    lookZone?.addEventListener('touchmove', e => {
+        e.preventDefault()
+        for (const t of e.changedTouches) {
+            if (t.identifier !== lookId || !player) continue
+            const dx = t.clientX - lx
+            const dy = t.clientY - ly
+            lx = t.clientX
+            ly = t.clientY
+            lookMoved += Math.hypot(dx, dy)
+            player.applyLookDelta(dx * 1.6, dy * 1.6)
+        }
+    }, { passive: false })
+
+    lookZone?.addEventListener('touchend', e => {
+        for (const t of e.changedTouches) {
+            if (t.identifier !== lookId) continue
+            lookId = -1
+            // Tap = shoot for hunter (< 200ms, < 12px movement)
+            if (role === 'hunter' && netGun && lookMoved < 12 && Date.now() - lookStart < 200) {
+                netGun.tryFireFromMobile()
+            }
+        }
+    })
+
+    // ── Action buttons ──
+    const mJump = document.getElementById('m-jump')
+    mJump?.addEventListener('touchstart', e => {
+        e.preventDefault()
+        if (player) { player.keys.space = true; player.jumpBufferTimer = 0.15 }
+    }, { passive: false })
+    mJump?.addEventListener('touchend', e => { e.preventDefault(); if (player) player.keys.space = false }, { passive: false })
+
+    document.getElementById('m-interact')?.addEventListener('touchstart', e => {
+        e.preventDefault(); eKeyPressed = true
+    }, { passive: false })
+
+    document.getElementById('m-flashlight')?.addEventListener('touchstart', e => {
+        e.preventDefault(); fKeyPressed = true
+    }, { passive: false })
+
+    document.getElementById('m-phase')?.addEventListener('touchstart', e => {
+        e.preventDefault(); if (player) player.tryPhase(player.lastFear)
+    }, { passive: false })
+}
+
 // ─── GAME LOOP ───
 function gameLoop() {
     requestAnimationFrame(gameLoop)
@@ -292,6 +418,11 @@ function gameLoop() {
 
     // Update biometrics
     biometrics.update(dt)
+    systemTimers.bpm += dt
+    if (systemTimers.bpm >= 1.0) {
+        systemTimers.bpm = 0
+        biometrics.triggerEstimate()
+    }
     const biometricBPM = biometrics.getBPM()
 
     const manualBPM = hud.getManualBPM()
@@ -350,17 +481,22 @@ function gameLoop() {
     const peerDist = player ? player.getPeerDistance() : Infinity
     const moving   = player ? player.isMoving() : false
 
-    let isLineOfSight = true
-    if (player && player.peerPosition && peerDist < 15) {
-        const fromPos = player.position.clone()
-        const toPos   = player.peerPosition.clone()
-        const dir = new THREE.Vector3().subVectors(toPos, fromPos).normalize()
-        const ray = { origin: fromPos, direction: dir }
-        const hit = engine.raycastCollision(ray)
-        if (hit && hit.distance < peerDist) isLineOfSight = false
+    systemTimers.voice += dt
+    if (systemTimers.voice >= 0.1) {
+        const voiceDt = systemTimers.voice
+        systemTimers.voice = 0
+        cachedPeerLineOfSight = true
+        if (player && player.peerPosition && peerDist < 15) {
+            losFrom.copy(player.position)
+            losTo.copy(player.peerPosition)
+            losDir.subVectors(losTo, losFrom).normalize()
+            const hit = engine.raycastCollision({ origin: losFrom, direction: losDir })
+            if (hit && hit.distance < peerDist) cachedPeerLineOfSight = false
+        }
+        voice.update(voiceDt, peerDist, cachedPeerLineOfSight)
+        voice.applyFearDistortion(role === 'prey' ? localFear : peerFear)
     }
-    audio.update(dt, localFear, moving, localBPM, peerDist, isLineOfSight)
-    voice.update(dt, peerDist, isLineOfSight)
+    audio.update(dt, localFear, moving, localBPM, peerDist, cachedPeerLineOfSight)
 
     if (
         role === 'hunter' &&
@@ -392,6 +528,16 @@ function gameLoop() {
     if (role === 'prey' && player) {
         hud.setStamina(player.getStamina())
         hud.setPhaseState(player.getPhaseCooldown(), player.isPhasing, localFear > 0.5)
+    }
+
+    // ─── Gamepad button edges (read + clear from player) ───
+    if (player?.gpFlashJustPressed) {
+        player.gpFlashJustPressed = false
+        fKeyPressed = true
+    }
+    if (player?.gpInteractJustPressed) {
+        player.gpInteractJustPressed = false
+        eKeyPressed = true
     }
 
     // ─── F (flashlight) ───

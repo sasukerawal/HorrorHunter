@@ -3,7 +3,9 @@
 
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <title>BIO-HORROR — 2-Player FPS</title>
   <meta name="description" content="Multiplayer horror FPS with Biometric Fear System" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -49,7 +51,26 @@
   </div>
 
   <!-- Biometric camera (hidden video element for face-detection BPM) -->
-  <video id="biometric-cam" style="display:none" playsinline autoplay></video>
+  <video id="biometric-cam" style="display:none" playsinline autoplay muted></video>
+
+  <!-- ======================== MOBILE CONTROLS ======================== -->
+  <div id="mobile-controls" class="hidden">
+    <!-- Left joystick zone -->
+    <div id="joy-left-zone" class="joy-zone">
+      <div id="joy-left-base" class="joy-base">
+        <div id="joy-left-knob" class="joy-knob"></div>
+      </div>
+    </div>
+    <!-- Right zone: swipe to look, tap to shoot (hunter) -->
+    <div id="look-zone" class="look-zone"></div>
+    <!-- Action buttons -->
+    <div id="mobile-action-btns">
+      <button id="m-jump"       class="m-btn">▲</button>
+      <button id="m-interact"   class="m-btn">E</button>
+      <button id="m-flashlight" class="m-btn hidden">🔦</button>
+      <button id="m-phase"      class="m-btn hidden">⚡</button>
+    </div>
+  </div>
 
   <!-- ======================== LOBBY UI ======================== -->
   <div id="ui-overlay">

@@ -78,6 +78,14 @@ export class Player {
         this._camRight        = new THREE.Vector3()
         this._inputForce      = new THREE.Vector3()
         this._delta           = new THREE.Vector3()
+        this._tempVec         = new THREE.Vector3()
+        this._tempVec2        = new THREE.Vector3()
+        this._nextPos         = new THREE.Vector3()
+        this._testPos         = new THREE.Vector3()
+        this._rayOrigin       = new THREE.Vector3()
+        this._lookDir         = new THREE.Vector3()
+        this._tempBox         = new THREE.Box3()
+        this._tempBox2        = new THREE.Box3()
         this._groundMeshes    = []
 
         // Mouse look
@@ -85,6 +93,15 @@ export class Player {
         this.mouseSensitivity = 0.002
 
         this.keys = { w: false, a: false, s: false, d: false, space: false, shift: false }
+
+        // Gamepad state
+        this._gpMove           = new THREE.Vector2()
+        this._gpLook           = new THREE.Vector2()
+        this._gpPrevButtons    = []
+        this._gpConnected      = false
+        // Readable by main.js; cleared after read
+        this.gpInteractJustPressed = false
+        this.gpFlashJustPressed    = false
 
         // Peer
         this.peerPosition = new THREE.Vector3(0, 1.7, -5)
@@ -106,8 +123,49 @@ export class Player {
         this._createPeerMesh()
     }
 
+    // Public: apply camera look delta from touch/gamepad sources
+    applyLookDelta(dx, dy) {
+        this.euler.y -= dx * this.mouseSensitivity
+        this.euler.x -= dy * this.mouseSensitivity
+        this.euler.x = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.euler.x))
+        if (this.isHiding) {
+            const min = this.hideYawCenter - HIDE_YAW_RANGE
+            const max = this.hideYawCenter + HIDE_YAW_RANGE
+            if (this.euler.y < min) this.euler.y = min
+            if (this.euler.y > max) this.euler.y = max
+        }
+        this.camera.quaternion.setFromEuler(this.euler)
+    }
+
+    _pollGamepad() {
+        const gamepads = navigator.getGamepads ? navigator.getGamepads() : []
+        let gp = null
+        for (const g of gamepads) { if (g?.connected) { gp = g; break } }
+        this._gpConnected = !!gp
+        if (!gp) { this._gpMove.set(0, 0); this._gpLook.set(0, 0); return }
+
+        const DEAD = 0.15
+        const ax   = v => Math.abs(v) > DEAD ? v : 0
+        this._gpMove.set(ax(gp.axes[0] ?? 0), ax(gp.axes[1] ?? 0))
+        this._gpLook.set(ax(gp.axes[2] ?? 0), ax(gp.axes[3] ?? 0))
+
+        const curr = Array.from(gp.buttons, b => b.pressed)
+        const prev = this._gpPrevButtons
+        const rose = i => curr[i] && !prev[i]
+
+        if (rose(0)) { this.keys.space = true; this.jumpBufferTimer = JUMP_BUFFER }  // A = jump
+        if (curr[4]) this.keys.shift = true; else if (!curr[4]) this.keys.shift = false  // LB = dash
+        if (rose(1)) this.gpInteractJustPressed = true   // B = interact
+        if (rose(3)) this.gpFlashJustPressed    = true   // Y = flashlight
+        if (rose(2) && this.role === 'prey') this.tryPhase(this.lastFear)  // X = phase
+
+        this._gpPrevButtons = curr
+    }
+
     _setupInput() {
         document.addEventListener('click', () => {
+            const isMobile = 'ontouchstart' in window
+            if (isMobile) return
             if (document.getElementById('ui-overlay').classList.contains('hidden')) {
                 document.body.requestPointerLock()
             }
@@ -377,9 +435,9 @@ export class Player {
 
     _isInsideAnyCollider(pos) {
         const FOOT_LIFT = 0.1
-        const playerBox = new THREE.Box3(
-            new THREE.Vector3(pos.x - this.radius, pos.y - this.height + FOOT_LIFT, pos.z - this.radius),
-            new THREE.Vector3(pos.x + this.radius, pos.y + 0.1, pos.z + this.radius)
+        const playerBox = this._tempBox.set(
+            this._tempVec.set(pos.x - this.radius, pos.y - this.height + FOOT_LIFT, pos.z - this.radius),
+            this._tempVec2.set(pos.x + this.radius, pos.y + 0.1, pos.z + this.radius)
         )
         for (const { box } of this.engine.getCollisionEntriesNear(pos)) {
             if (box.max.y <= pos.y - this.height + 0.05) continue
@@ -394,7 +452,7 @@ export class Player {
         for (let r = 0.5; r <= 4.0; r += 0.5) {
             for (let a = 0; a < 16; a++) {
                 const ang = (a / 16) * Math.PI * 2
-                const test = from.clone()
+                const test = this._testPos.copy(from)
                 test.x += Math.cos(ang) * r
                 test.z += Math.sin(ang) * r
                 if (!this._isInsideAnyCollider(test)) return test
@@ -430,6 +488,7 @@ export class Player {
 
     // ─── PER-FRAME ──────────────────────────────────────────────────
     update(dt, fearModifiers = {}, currentFear = 0) {
+        this._pollGamepad()
         this.lastFear = currentFear
 
         // Stamina regen
@@ -473,7 +532,22 @@ export class Player {
         if (this.keys.s) dir.addScaledVector(camForward, -1)
         if (this.keys.a) dir.addScaledVector(camRight,   -1)
         if (this.keys.d) dir.addScaledVector(camRight,    1)
+
+        // Gamepad left stick — additive with keyboard
+        if (this._gpMove.lengthSq() > 0.01) {
+            dir.addScaledVector(camForward, -this._gpMove.y)
+            dir.addScaledVector(camRight,    this._gpMove.x)
+        }
         if (dir.lengthSq() > 0) dir.normalize()
+
+        // Gamepad right stick — camera look
+        if (this._gpLook.lengthSq() > 0.01) {
+            const sens = 0.04
+            this.euler.y -= this._gpLook.x * sens
+            this.euler.x -= this._gpLook.y * sens
+            this.euler.x  = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.euler.x))
+            this.camera.quaternion.setFromEuler(this.euler)
+        }
 
         // Dash (Prey only, disabled if fear too high)
         if (this.role === 'prey' && this.keys.shift && this.dashCooldown <= 0 && (fearModifiers.dashEnabled ?? true)) {
@@ -564,7 +638,7 @@ export class Player {
     }
 
     _moveAndCollide(delta) {
-        const nextPos = this.position.clone().add(delta)
+        const nextPos = this._nextPos.copy(this.position).add(delta)
 
         // Phase: ignore all AABB collision but keep world bounds + ground
         if (this.isPhasing) {
@@ -576,7 +650,7 @@ export class Player {
         }
 
         if (this.role === 'hunter' && this.engine.ventZones?.length) {
-            const testPt = new THREE.Vector3(nextPos.x, 0.5, nextPos.z)
+            const testPt = this._tempVec.set(nextPos.x, 0.5, nextPos.z)
             for (const zone of this.engine.ventZones) {
                 if (zone.containsPoint(testPt)) return
             }
@@ -584,9 +658,9 @@ export class Player {
 
         const FOOT_LIFT = 0.1
         const collisionCandidates = this.engine.getCollisionEntriesNear(nextPos)
-        const playerBox = new THREE.Box3(
-            new THREE.Vector3(nextPos.x - this.radius, nextPos.y - this.height + FOOT_LIFT, nextPos.z - this.radius),
-            new THREE.Vector3(nextPos.x + this.radius, nextPos.y + 0.1, nextPos.z + this.radius)
+        const playerBox = this._tempBox.set(
+            this._tempVec.set(nextPos.x - this.radius, nextPos.y - this.height + FOOT_LIFT, nextPos.z - this.radius),
+            this._tempVec2.set(nextPos.x + this.radius, nextPos.y + 0.1, nextPos.z + this.radius)
         )
 
         let blocked = false
@@ -602,12 +676,12 @@ export class Player {
         } else {
             // Wall-slide via axis-separated movement
             const tryAxis = (dx, dz) => {
-                const test = this.position.clone()
+                const test = this._testPos.copy(this.position)
                 test.x += dx
                 test.z += dz
-                const tBox = new THREE.Box3(
-                    new THREE.Vector3(test.x - this.radius, nextPos.y - this.height + FOOT_LIFT, test.z - this.radius),
-                    new THREE.Vector3(test.x + this.radius, nextPos.y + 0.1, test.z + this.radius)
+                const tBox = this._tempBox2.set(
+                    this._tempVec.set(test.x - this.radius, nextPos.y - this.height + FOOT_LIFT, test.z - this.radius),
+                    this._tempVec2.set(test.x + this.radius, nextPos.y + 0.1, test.z + this.radius)
                 )
                 for (const { box } of this.engine.getCollisionEntriesNear(test)) {
                     if (box.max.y <= nextPos.y - this.height + 0.05) continue
@@ -656,7 +730,7 @@ export class Player {
             return
         }
 
-        const rayOrigin = this.position.clone()
+        const rayOrigin = this._rayOrigin.copy(this.position)
         rayOrigin.y += 0.3
         this._groundRaycaster.set(rayOrigin, this._downVector)
         this._groundRaycaster.near = 0
@@ -692,9 +766,7 @@ export class Player {
     }
 
     getLookDirection() {
-        const dir = new THREE.Vector3()
-        this.camera.getWorldDirection(dir)
-        return dir
+        return this.camera.getWorldDirection(this._lookDir)
     }
 
     updatePeer(data) {

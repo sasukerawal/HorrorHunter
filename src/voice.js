@@ -10,6 +10,11 @@ const ICE_SERVERS = [
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun.cloudflare.com:3478' },
+    {
+        urls:       'turn:a.relay.metered.ca:80',
+        username:   'openrelayproject',
+        credential: 'openrelayproject',
+    },
 ]
 
 export class VoiceChat {
@@ -26,6 +31,8 @@ export class VoiceChat {
         this._ownCtx      = null
         this._panicCooldown = 0
         this._levelTimer    = 0
+        this._breathWindow  = []
+        this._fearDistortionLevel = 0
         this._micAttempted  = false
         this._queuedOffers  = []           // offers that arrived before mic was ready
         this._queuedIce     = new Map()    // peerId → RTCIceCandidate[]
@@ -43,6 +50,7 @@ export class VoiceChat {
         this.role      = role
         this.peerRoles = new Map(peers.map(p => [p.id, p.role]))
         this._micAttempted = false
+        this._breathWindow.length = 0
 
         console.log(`[Voice] Starting as ${role}; peers=${peers.map(p => `${p.id}:${p.role}`).join(', ') || 'none'}`)
 
@@ -81,6 +89,7 @@ export class VoiceChat {
         for (const graph of this.remoteGraphs.values()) {
             try { graph.source.disconnect() } catch {}
             try { graph.filter.disconnect() } catch {}
+            try { graph.distortion?.disconnect() } catch {}
             try { graph.gain.disconnect()   } catch {}
         }
         this.remoteGraphs.clear()
@@ -90,6 +99,7 @@ export class VoiceChat {
         this.analyser     = null
         this.analyserData = null
         this._micAttempted = false
+        this._breathWindow.length = 0
     }
 
     // ── PRIVATE — SIGNALING ──────────────────────────────────────────────────────
@@ -126,9 +136,9 @@ export class VoiceChat {
             }
         })
 
-        this.socket.on('voicePanic', ({ fromId }) => {
+        this.socket.on('voicePanic', ({ fromId, type = 'panic' }) => {
             if (this.role !== 'hunter') return
-            if (this.onPanicCue) this.onPanicCue(fromId)
+            if (this.onPanicCue) this.onPanicCue(fromId, type)
         })
 
         this.socket.on('peerDisconnected', ({ id }) => {
@@ -304,14 +314,18 @@ export class VoiceChat {
 
         const source = ctx.createMediaStreamSource(stream)
         const filter = ctx.createBiquadFilter()
+        const distortion = ctx.createWaveShaper()
         const gain   = ctx.createGain()
         filter.type            = 'lowpass'
         filter.frequency.value = 7000
+        distortion.curve = this._makeDistortionCurve(0)
+        distortion.oversample = '2x'
         gain.gain.value        = 0
         source.connect(filter)
-        filter.connect(gain)
+        filter.connect(distortion)
+        distortion.connect(gain)
         gain.connect(destination)
-        this.remoteGraphs.set(peerId, { source, filter, gain })
+        this.remoteGraphs.set(peerId, { source, filter, distortion, gain })
     }
 
     _updateRemoteVolumes(peerDistance, isLineOfSight) {
@@ -320,7 +334,9 @@ export class VoiceChat {
         const base   = Math.max(0, Math.min(1, 1 - dist / VOICE_RANGE))
         const muffle = isLineOfSight ? 1 : 0.45
         const volume = Math.pow(base, 1.35) * muffle
-        const freq   = isLineOfSight ? 7000 : 750
+        const fear = this._fearDistortionLevel
+        const fearFreq = fear > 0.7 ? 1200 : fear > 0.4 ? 3500 : 7000
+        const freq   = Math.min(isLineOfSight ? 7000 : 750, fearFreq)
         const ctx    = this._getAudioContext()
         if (!ctx) return
         for (const graph of this.remoteGraphs.values()) {
@@ -345,8 +361,42 @@ export class VoiceChat {
         const rms = Math.sqrt(sum / this.analyserData.length)
         if (rms >= PANIC_RMS_THRESHOLD && this._panicCooldown <= 0) {
             this._panicCooldown = PANIC_COOLDOWN
-            this.socket.emit('voicePanic', { level: rms })
+            this.socket.emit('voicePanic', { level: rms, type: 'panic' })
+            this._breathWindow.length = 0
+            return
         }
+
+        this._breathWindow.push(rms)
+        if (this._breathWindow.length > 50) this._breathWindow.shift()
+        if (this._breathWindow.length >= 50) {
+            const avg = this._breathWindow.reduce((a, b) => a + b, 0) / this._breathWindow.length
+            const isBreathing = avg > 0.02 && avg < 0.08
+            if (isBreathing && this._panicCooldown <= 0) {
+                this._panicCooldown = PANIC_COOLDOWN * 0.5
+                this.socket.emit('voicePanic', { level: avg, type: 'breathing' })
+            }
+        }
+    }
+
+    applyFearDistortion(fearLevel = 0) {
+        if (!this.remoteGraphs.size) return
+        const fear = Math.max(0, Math.min(1, fearLevel))
+        this._fearDistortionLevel = fear
+        for (const graph of this.remoteGraphs.values()) {
+            if (graph.distortion) graph.distortion.curve = this._makeDistortionCurve(fear)
+        }
+    }
+
+    _makeDistortionCurve(amount) {
+        const samples = 256
+        const curve = new Float32Array(samples)
+        for (let i = 0; i < samples; i++) {
+            const x = (i * 2) / samples - 1
+            curve[i] = amount < 0.1
+                ? x
+                : ((Math.PI + amount * 80) * x) / (Math.PI + amount * 80 * Math.abs(x))
+        }
+        return curve
     }
 
     _getAudioContext() {
@@ -367,6 +417,7 @@ export class VoiceChat {
         if (graph) {
             try { graph.source.disconnect() } catch {}
             try { graph.filter.disconnect() } catch {}
+            try { graph.distortion?.disconnect() } catch {}
             try { graph.gain.disconnect()   } catch {}
             this.remoteGraphs.delete(peerId)
         }

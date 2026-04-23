@@ -47,6 +47,8 @@ export class NetGun {
     setPeerPhasing(p)      { this.peerIsPhasing = !!p }
     /** Bloom = baseBloom + (fear * maxJitter) — used by HUD to size the crosshair, and by _fire for raycast spread */
     getBloom()             { return this.baseBloom + this.peerFear * this.maxJitter }
+    /** Called from mobile tap-to-shoot and gamepad trigger */
+    tryFireFromMobile()    { this._fire() }
 
     _fire() {
         if (this.cooldown > 0) return

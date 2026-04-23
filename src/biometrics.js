@@ -17,13 +17,12 @@
 
 const SAMPLE_RATE          = 15
 const SAMPLE_INTERVAL      = 1 / SAMPLE_RATE
-const ESTIMATE_INTERVAL    = 1.0
 const FACE_DETECT_INTERVAL = 0.40        // run MP every 0.4 s — good tracking, low overhead
 const BUFFER_SECONDS       = 15          // more data → more stable autocorrelation
 const MIN_ANALYSIS_SECONDS = 6
 const MIN_BPM              = 48
 const MAX_BPM              = 180
-const SMOOTH_ALPHA         = 0.85
+const SMOOTH_ALPHA         = 0.15   // low alpha = signal preserving; 0.85 was cutting off rPPG frequencies
 const CONFIDENCE_THRESHOLD = 0.12        // slightly lower than 0.15 — more estimates accepted
 
 // MediaPipe CDN (pinned to a stable release)
@@ -33,6 +32,11 @@ const MP_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarke
 // Landmark indices chosen for forehead centre + bilateral cheeks
 // (numbers per MediaPipe Face Mesh 478-point topology)
 const FACE_ROI_LANDMARKS = [10, 9, 8, 107, 336, 116, 147, 187, 207, 345, 376, 411, 427]
+const FOREHEAD_LM        = [10, 9, 8]
+const LEFT_CHEEK_LM      = [116, 147, 187, 207]
+const RIGHT_CHEEK_LM     = [345, 376, 411, 427]
+const MOTION_LM          = [1, 4, 10, 152]
+const MOTION_THRESHOLD   = 0.008
 
 // ROI temporal smoothing — how fast the tracked box follows the face
 const ROI_SMOOTH = 0.35   // 0=instant, 1=frozen; lower = follows faster
@@ -55,6 +59,11 @@ export class Biometrics {
         this._canvasCtx = null
         this._faceBox      = null         // current smoothed ROI {x, y, w, h}
         this._rawFaceBox   = null         // last raw landmark box before smoothing
+        this._roiForehead   = null
+        this._roiLeftCheek  = null
+        this._roiRightCheek = null
+        this._prevLandmarks = null
+        this._motionScore   = 0
         this._lastFaceSeen = 0
         this._lastValidBPM = null
 
@@ -73,6 +82,7 @@ export class Biometrics {
                 this.videoEl.style.display = 'none'
                 this.videoEl.setAttribute('playsinline', '')
                 this.videoEl.setAttribute('autoplay', '')
+                this.videoEl.muted = true   // required for autoplay on mobile & modern browsers
                 document.body.appendChild(this.videoEl)
             }
 
@@ -88,7 +98,10 @@ export class Biometrics {
                 audio: false,
             })
             this.videoEl.srcObject = this.stream
-            await this.videoEl.play()
+            this.videoEl.muted = true
+            try { await this.videoEl.play() } catch (playErr) {
+                console.warn('[Biometrics] video.play() blocked:', playErr.message)
+            }
 
             this._canvas        = document.createElement('canvas')
             this._canvas.width  = 96
@@ -143,16 +156,16 @@ export class Biometrics {
         }
 
         // ── Stage F: periodic BPM estimation ──
-        this._estimateTimer += SAMPLE_INTERVAL
-        if (this._estimateTimer >= ESTIMATE_INTERVAL) {
-            this._estimateTimer = 0
-            const est = this._estimateBPM()
-            if (est) {
-                this.currentBPM = est.bpm
-                this.confidence = est.confidence
-            }
-            this._setIndicator(this._statusText())
+    }
+
+    triggerEstimate() {
+        if (!this.available) return
+        const est = this._estimateBPM()
+        if (est) {
+            this.currentBPM = est.bpm
+            this.confidence = est.confidence
         }
+        this._setIndicator(this._statusText())
     }
 
     getBPM()       { return this.currentBPM }
@@ -203,29 +216,86 @@ export class Biometrics {
             const results   = this._faceLandmarker.detectForVideo(this.videoEl, performance.now())
             const landmarks = results.faceLandmarks?.[0]
             if (landmarks) {
+                this._updateMotionScore(landmarks)
                 const raw = this._landmarksToBox(landmarks)
                 if (raw) {
                     this._rawFaceBox = raw
                     this._lastFaceSeen = performance.now()
-                    // Temporal smoothing: lerp existing box toward new detection
-                    if (!this._faceBox) {
-                        this._faceBox = { ...raw }
-                    } else {
-                        this._faceBox.x = this._faceBox.x * ROI_SMOOTH + raw.x * (1 - ROI_SMOOTH)
-                        this._faceBox.y = this._faceBox.y * ROI_SMOOTH + raw.y * (1 - ROI_SMOOTH)
-                        this._faceBox.w = this._faceBox.w * ROI_SMOOTH + raw.w * (1 - ROI_SMOOTH)
-                        this._faceBox.h = this._faceBox.h * ROI_SMOOTH + raw.h * (1 - ROI_SMOOTH)
-                    }
+                    this._faceBox = this._smoothROI(this._faceBox, raw)
                 }
+                this._roiForehead   = this._smoothROI(this._roiForehead, this._extractROI(landmarks, FOREHEAD_LM))
+                this._roiLeftCheek  = this._smoothROI(this._roiLeftCheek, this._extractROI(landmarks, LEFT_CHEEK_LM))
+                this._roiRightCheek = this._smoothROI(this._roiRightCheek, this._extractROI(landmarks, RIGHT_CHEEK_LM))
             } else if (performance.now() - this._lastFaceSeen > 2500) {
-                this._faceBox    = null
-                this._rawFaceBox = null
+                this._clearTrackedROIs()
             }
         } catch (err) {
             console.warn('[Biometrics] FaceLandmarker detect error:', err.message)
             this._faceLandmarkerReady = false
-            this._faceBox    = null
-            this._rawFaceBox = null
+            this._clearTrackedROIs()
+        }
+    }
+
+    _clearTrackedROIs() {
+        this._faceBox = null
+        this._rawFaceBox = null
+        this._roiForehead = null
+        this._roiLeftCheek = null
+        this._roiRightCheek = null
+        this._prevLandmarks = null
+        this._motionScore = 0
+    }
+
+    _updateMotionScore(landmarks) {
+        if (this._prevLandmarks) {
+            let sumDist = 0
+            let count = 0
+            for (const idx of MOTION_LM) {
+                const a = this._prevLandmarks[idx]
+                const b = landmarks[idx]
+                if (!a || !b) continue
+                const dx = a.x - b.x
+                const dy = a.y - b.y
+                sumDist += Math.sqrt(dx * dx + dy * dy)
+                count++
+            }
+            this._motionScore = count ? sumDist / count : 0
+        }
+        this._prevLandmarks = landmarks.map(lm => ({ x: lm.x, y: lm.y, z: lm.z ?? 0 }))
+    }
+
+    _smoothROI(prev, raw) {
+        if (!raw) return prev
+        if (!prev) return { ...raw }
+        return {
+            x: prev.x * ROI_SMOOTH + raw.x * (1 - ROI_SMOOTH),
+            y: prev.y * ROI_SMOOTH + raw.y * (1 - ROI_SMOOTH),
+            w: prev.w * ROI_SMOOTH + raw.w * (1 - ROI_SMOOTH),
+            h: prev.h * ROI_SMOOTH + raw.h * (1 - ROI_SMOOTH),
+        }
+    }
+
+    _extractROI(landmarks, indices) {
+        const w = this._canvas.width
+        const h = this._canvas.height
+        let minX = 1, minY = 1, maxX = 0, maxY = 0
+        let found = false
+        for (const idx of indices) {
+            const lm = landmarks[idx]
+            if (!lm) continue
+            minX = Math.min(minX, lm.x)
+            maxX = Math.max(maxX, lm.x)
+            minY = Math.min(minY, lm.y)
+            maxY = Math.max(maxY, lm.y)
+            found = true
+        }
+        if (!found) return null
+        const pad = 0.025
+        return {
+            x: Math.max(0, (minX - pad) * w),
+            y: Math.max(0, (minY - pad) * h),
+            w: Math.max(6, Math.min(w, (maxX - minX + pad * 2) * w)),
+            h: Math.max(6, Math.min(h, (maxY - minY + pad * 2) * h)),
         }
     }
 
@@ -260,7 +330,25 @@ export class Biometrics {
         const h = this._canvas.height
         this._canvasCtx.drawImage(this.videoEl, 0, 0, w, h)
 
-        const roi = this._getROI(w, h)
+        const boxes = [this._roiForehead, this._roiLeftCheek, this._roiRightCheek].filter(Boolean)
+        if (boxes.length) {
+            let sum = 0
+            let count = 0
+            for (const box of boxes) {
+                const chroma = this._chromaFromBox(box)
+                if (chroma === null) continue
+                sum += chroma
+                count++
+            }
+            return count ? sum / count : null
+        }
+
+        return this._chromaFromBox(this._getROI(w, h))
+    }
+
+    _chromaFromBox(roi) {
+        const w = this._canvas.width
+        const h = this._canvas.height
         const x0  = Math.max(0, Math.floor(roi.x))
         const y0  = Math.max(0, Math.floor(roi.y))
         const x1  = Math.min(w, Math.ceil(roi.x + roi.w))
@@ -295,6 +383,10 @@ export class Biometrics {
     _estimateBPM() {
         const samples = this._frameBuffer
         if (samples.length < SAMPLE_RATE * MIN_ANALYSIS_SECONDS) return null
+        if (this._motionScore > MOTION_THRESHOLD) {
+            console.log('[Bio] Motion artifact - holding BPM')
+            return null
+        }
 
         const duration = samples[samples.length - 1].time - samples[0].time
         if (duration < MIN_ANALYSIS_SECONDS) return null
@@ -316,6 +408,7 @@ export class Biometrics {
         const std      = Math.sqrt(variance)
         if (std < 0.000005) return null
         const normed = centred.map(v => v / std)
+        const filtered = this._bandpassFilter(normed, SAMPLE_RATE)
 
         // 5. Normalised autocorrelation
         const lagMin = Math.ceil((60 / MAX_BPM) * SAMPLE_RATE)
@@ -325,8 +418,8 @@ export class Biometrics {
         let bestLag = 0, bestScore = -Infinity
         for (let lag = lagMin; lag <= lagMax; lag++) {
             let s = 0, n = 0
-            for (let i = lag; i < normed.length; i++) {
-                s += normed[i] * normed[i - lag]
+            for (let i = lag; i < filtered.length; i++) {
+                s += filtered[i] * filtered[i - lag]
                 n++
             }
             scores[lag] = n ? s / n : -Infinity
@@ -400,6 +493,32 @@ export class Biometrics {
     _applyHannWindow(values) {
         const N = values.length
         return values.map((v, i) => v * 0.5 * (1 - Math.cos((2 * Math.PI * i) / (N - 1))))
+    }
+
+    _bandpassFilter(signal, sampleRate) {
+        const out = new Float32Array(signal.length)
+        if (!signal.length) return out
+
+        const highRC = 1.0 / (2 * Math.PI * 0.7)
+        const lowRC  = 1.0 / (2 * Math.PI * 4.0)
+        const dt     = 1.0 / sampleRate
+        const highA  = highRC / (highRC + dt)
+        const lowA   = dt / (lowRC + dt)
+
+        let prev = signal[0]
+        let prevOut = 0
+        for (let i = 0; i < signal.length; i++) {
+            prevOut = highA * (prevOut + signal[i] - prev)
+            prev = signal[i]
+            out[i] = prevOut
+        }
+
+        let lpPrev = out[0]
+        for (let i = 1; i < out.length; i++) {
+            lpPrev = lpPrev + lowA * (out[i] - lpPrev)
+            out[i] = lpPrev
+        }
+        return out
     }
 
     _statusText() {
