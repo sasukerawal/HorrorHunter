@@ -13,7 +13,7 @@ import { AssetManager } from './assets.js'
 import { VoiceChat } from './voice.js'
 import * as THREE from 'three'
 
-const socket = io()
+const socket = io(import.meta.env.VITE_BACKEND_URL || undefined)
 
 const engine = new Engine()
 const hud = new HUD()

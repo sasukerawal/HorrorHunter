@@ -9,14 +9,14 @@
     "start": "node server/index.cjs"
   },
   "dependencies": {
+    "express": "^4.18.3",
+    "socket.io": "^4.7.5",
     "socket.io-client": "^4.7.5",
     "three": "^0.163.0",
     "vitallens": "^0.4.5"
   },
   "devDependencies": {
-    "express": "^4.18.3",
     "sharp": "^0.34.5",
-    "socket.io": "^4.7.5",
     "vite": "^5.2.0"
   }
 }
