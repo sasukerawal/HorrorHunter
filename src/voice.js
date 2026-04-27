@@ -5,6 +5,12 @@ const PANIC_RMS_THRESHOLD = 0.18
 const PANIC_COOLDOWN      = 1.4
 const RECONNECT_MAX_WAIT  = 16000   // ms — cap for exponential back-off
 
+// VAD (Voice Activity Detection) — Krunker-style gating: only transmit when speaking.
+// Hysteresis: open at higher threshold, close at lower with hangover so end-of-words aren't clipped.
+const VAD_OPEN_RMS   = 0.025
+const VAD_CLOSE_RMS  = 0.012
+const VAD_HANGOVER   = 0.35   // seconds — keep gate open this long after RMS drops
+
 const ICE_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302'  },
     { urls: 'stun:stun1.l.google.com:19302' },
@@ -39,6 +45,14 @@ export class VoiceChat {
         this._reconnectTimers = new Map()  // peerId → setTimeout handle
         this._reconnectDelay  = new Map()  // peerId → current back-off ms
         this.onPanicCue = null
+
+        // VAD state
+        this._vadOpen        = false
+        this._vadCloseTimer  = 0      // hangover countdown
+        this._pushToTalk     = false  // when true, transmits only while PTT key is held
+        this._pttHeld        = false
+        this._currentRMS     = 0
+        this._voiceFear      = 0      // 0..1 — sustained loudness/breathing → fear surrogate
 
         this._wireSignaling()
     }
@@ -87,10 +101,11 @@ export class VoiceChat {
         this.peerConnections.clear()
 
         for (const graph of this.remoteGraphs.values()) {
-            try { graph.source.disconnect() } catch {}
-            try { graph.filter.disconnect() } catch {}
+            try { graph.source.disconnect()      } catch {}
+            try { graph.panner?.disconnect()     } catch {}
+            try { graph.filter.disconnect()      } catch {}
             try { graph.distortion?.disconnect() } catch {}
-            try { graph.gain.disconnect()   } catch {}
+            try { graph.gain.disconnect()        } catch {}
         }
         this.remoteGraphs.clear()
 
@@ -312,20 +327,38 @@ export class VoiceChat {
         if (!ctx || !destination) return
         if (ctx.state === 'suspended') ctx.resume()
 
-        const source = ctx.createMediaStreamSource(stream)
-        const filter = ctx.createBiquadFilter()
+        const source     = ctx.createMediaStreamSource(stream)
+        const panner     = ctx.createPanner()
+        const filter     = ctx.createBiquadFilter()
         const distortion = ctx.createWaveShaper()
-        const gain   = ctx.createGain()
+        const gain       = ctx.createGain()
+
+        // HRTF panner for directional 3D voice — distance attenuation handled by gain node
+        panner.panningModel  = 'HRTF'
+        panner.distanceModel = 'linear'
+        panner.refDistance   = 1
+        panner.maxDistance   = VOICE_RANGE
+        panner.rolloffFactor = 0   // disable panner distance falloff; gain node handles it
+        panner.coneInnerAngle = 360
+        panner.coneOuterAngle = 360
+        panner.coneOuterGain  = 0
+        // Start the peer ahead of the listener — updated via updateSpatialAudio()
+        if (panner.positionX) { panner.positionX.value = 0; panner.positionY.value = 0; panner.positionZ.value = -5 }
+        else                  { try { panner.setPosition(0, 0, -5) } catch {} }
+
         filter.type            = 'lowpass'
         filter.frequency.value = 7000
-        distortion.curve = this._makeDistortionCurve(0)
-        distortion.oversample = '2x'
+        distortion.curve       = this._makeDistortionCurve(0)
+        distortion.oversample  = '2x'
         gain.gain.value        = 0
-        source.connect(filter)
+
+        // Chain: source → panner (HRTF direction) → filter (LOS muffle) → distortion (fear) → gain (volume) → out
+        source.connect(panner)
+        panner.connect(filter)
         filter.connect(distortion)
         distortion.connect(gain)
         gain.connect(destination)
-        this.remoteGraphs.set(peerId, { source, filter, distortion, gain })
+        this.remoteGraphs.set(peerId, { source, panner, filter, distortion, gain })
     }
 
     _updateRemoteVolumes(peerDistance, isLineOfSight) {
@@ -346,10 +379,11 @@ export class VoiceChat {
     }
 
     _updateMicLevel(dt) {
-        if (!this.analyser || !this.analyserData || this.role !== 'prey') return
+        if (!this.analyser || !this.analyserData) return
         this._panicCooldown = Math.max(0, this._panicCooldown - dt)
         this._levelTimer += dt
         if (this._levelTimer < 0.08) return
+        const tickDt = this._levelTimer
         this._levelTimer = 0
 
         this.analyser.getByteTimeDomainData(this.analyserData)
@@ -359,6 +393,33 @@ export class VoiceChat {
             sum += c * c
         }
         const rms = Math.sqrt(sum / this.analyserData.length)
+        this._currentRMS = rms
+
+        // ── VAD (Voice Activity Detection) ──
+        // Holding V (pttHeld) always forces transmit — overrides both VAD and PTT-only mode.
+        // PTT-only mode: mic is silent unless pttHeld.
+        // VAD mode (default): auto-gate by RMS with hysteresis + hangover.
+        let shouldTransmit
+        if (this._pttHeld) {
+            shouldTransmit = true
+        } else if (this._pushToTalk) {
+            shouldTransmit = false
+        } else {
+            if (rms >= VAD_OPEN_RMS)       { this._vadOpen = true;  this._vadCloseTimer = VAD_HANGOVER }
+            else if (rms < VAD_CLOSE_RMS)  { this._vadCloseTimer = Math.max(0, this._vadCloseTimer - tickDt); if (this._vadCloseTimer <= 0) this._vadOpen = false }
+            shouldTransmit = this._vadOpen
+        }
+        this._setMicTransmitting(shouldTransmit)
+
+        // ── Voice-derived fear (used as emotion fallback when face cam fails) ──
+        // Loud sustained speech / hyperventilating → high voice fear.
+        // Built from peak + EMA of recent RMS samples.
+        const ema = this._voiceFear * 0.92 + Math.min(1, rms * 5) * 0.08
+        this._voiceFear = Math.max(0, Math.min(1, ema))
+
+        // ── Hunter cues — only the PREY's voice generates panic / breathing pulses ──
+        if (this.role !== 'prey') return
+
         if (rms >= PANIC_RMS_THRESHOLD && this._panicCooldown <= 0) {
             this._panicCooldown = PANIC_COOLDOWN
             this.socket.emit('voicePanic', { level: rms, type: 'panic' })
@@ -374,6 +435,67 @@ export class VoiceChat {
             if (isBreathing && this._panicCooldown <= 0) {
                 this._panicCooldown = PANIC_COOLDOWN * 0.5
                 this.socket.emit('voicePanic', { level: avg, type: 'breathing' })
+            }
+        }
+    }
+
+    /** Enables/disables the local audio track based on VAD state — saves bandwidth, kills room noise. */
+    _setMicTransmitting(on) {
+        if (!this.localStream) return
+        const track = this.localStream.getAudioTracks()[0]
+        if (!track) return
+        if (track.enabled !== on) track.enabled = on
+    }
+
+    /** 0..1 — sustained voice intensity. Used as emotion fallback when face cam BPM is unreliable. */
+    getVoiceFear() { return this._voiceFear }
+    /** True when local mic is currently passing audio to peers. */
+    isTransmitting() { return this._pttHeld || this._vadOpen }
+    /** Toggle push-to-talk mode. When enabled, only transmits while pttHeld(true) is set. */
+    setPushToTalk(enabled) { this._pushToTalk = !!enabled; if (!enabled) this._pttHeld = false }
+    /** Press/release PTT. While held, always transmits regardless of VAD mode. */
+    pttHeld(held) { this._pttHeld = !!held }
+
+    /**
+     * Update HRTF listener pose and peer speaker position for 3D directional audio.
+     * Call every frame with camera world data from Three.js.
+     * @param {{x,y,z}} listenerPos  — camera/player world position
+     * @param {{x,y,z}} listenerFwd  — camera forward unit vector
+     * @param {{x,y,z}} listenerUp   — camera up unit vector
+     * @param {{x,y,z}|null} speakerPos — peer world position (null = keep previous)
+     */
+    updateSpatialAudio(listenerPos, listenerFwd, listenerUp, speakerPos) {
+        const ctx = this._getAudioContext()
+        if (!ctx || !listenerPos || !listenerFwd) return
+
+        const listener = ctx.listener
+        // Use AudioParam API where available (more precise, avoids scheduling jitter)
+        if (listener.positionX) {
+            listener.positionX.value = listenerPos.x
+            listener.positionY.value = listenerPos.y
+            listener.positionZ.value = listenerPos.z
+            listener.forwardX.value  = listenerFwd.x
+            listener.forwardY.value  = listenerFwd.y
+            listener.forwardZ.value  = listenerFwd.z
+            listener.upX.value       = listenerUp.x
+            listener.upY.value       = listenerUp.y
+            listener.upZ.value       = listenerUp.z
+        } else {
+            try {
+                listener.setPosition(listenerPos.x, listenerPos.y, listenerPos.z)
+                listener.setOrientation(listenerFwd.x, listenerFwd.y, listenerFwd.z, listenerUp.x, listenerUp.y, listenerUp.z)
+            } catch {}
+        }
+
+        if (!speakerPos) return
+        for (const graph of this.remoteGraphs.values()) {
+            if (!graph.panner) continue
+            if (graph.panner.positionX) {
+                graph.panner.positionX.value = speakerPos.x
+                graph.panner.positionY.value = speakerPos.y
+                graph.panner.positionZ.value = speakerPos.z
+            } else {
+                try { graph.panner.setPosition(speakerPos.x, speakerPos.y, speakerPos.z) } catch {}
             }
         }
     }
@@ -415,10 +537,11 @@ export class VoiceChat {
 
         const graph = this.remoteGraphs.get(peerId)
         if (graph) {
-            try { graph.source.disconnect() } catch {}
-            try { graph.filter.disconnect() } catch {}
+            try { graph.source.disconnect()      } catch {}
+            try { graph.panner?.disconnect()     } catch {}
+            try { graph.filter.disconnect()      } catch {}
             try { graph.distortion?.disconnect() } catch {}
-            try { graph.gain.disconnect()   } catch {}
+            try { graph.gain.disconnect()        } catch {}
             this.remoteGraphs.delete(peerId)
         }
 

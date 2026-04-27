@@ -1,6 +1,5 @@
 // src/engine.js — Three.js Scene Engine (flashlight toggle, BPM-driven beam, occlusion culling, lockers, extraction emergency)
 import * as THREE from 'three'
-import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js'
 import { generateMap } from './map.js'
 import { VolumetricFlashlight } from './volumetricFlashlight.js'
 
@@ -35,9 +34,18 @@ export class Engine {
         this._raycaster      = new THREE.Raycaster()
         this._dustPhase      = 0
         this._lightFlickerTimer = 0
-        this._ghostFrameSkip = 0
+        this._ghostUpdateTimer = 0
         this.mapData         = null
         this._extractionPulse = 0
+
+        // Dynamic resolution scaling
+        this._fpsFrames  = 0
+        this._fpsTimer   = 0
+        this._currentFPS = 60
+        this._lowspec    = new URLSearchParams(window.location.search).get('lowspec') === '1'
+        // lowspec: start at minimum tier; normal: start at mid tier, scale up if FPS allows
+        this._pixelTier   = this._lowspec ? 0 : 1
+        this._pixelRatios = this._lowspec ? [0.35, 0.45, 0.55] : [0.5, 0.7, 0.85]
 
         // Occlusion culling
         this.rooms             = []   // [{name, x, z, w, h}]
@@ -74,11 +82,9 @@ export class Engine {
     }
 
     init(canvas, assetManager = null) {
-        RectAreaLightUniformsLib.init()
-
         this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' })
         this.renderer.setSize(window.innerWidth, window.innerHeight)
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 0.85))
+        this._applyPixelTier()
         this.renderer.shadowMap.enabled = false
         this.renderer.setClearColor('#050505')
         this.renderer.toneMapping         = THREE.ACESFilmicToneMapping
@@ -88,7 +94,10 @@ export class Engine {
         this.camera.position.set(0, 1.7, 0)
         this.scene.add(this.camera)
 
-        this.scene.fog = new THREE.FogExp2('#050505', 0.025)
+        // lowspec: cheaper linear fog; normal: exponential for atmospheric depth
+        this.scene.fog = this._lowspec
+            ? new THREE.Fog('#050505', 18, 65)
+            : new THREE.FogExp2('#050505', 0.025)
 
         this.ambientLight = new THREE.AmbientLight('#b9d5ff', 0.6)
         this.scene.add(this.ambientLight)
@@ -103,13 +112,15 @@ export class Engine {
 
         this.volumetric = new VolumetricFlashlight(this.scene, this.camera)
 
-        const ghostColors = ['#00ffcc', '#ff6600']
-        ghostColors.forEach((color) => {
-            const g = new THREE.PointLight(color, 0.4, 10)
-            g.userData.baseIntensity = 0.4
-            this.scene.add(g)
-            this.ghostLights.push({ light: g, offset: Math.random() * Math.PI * 2 })
-        })
+        if (!this._lowspec) {
+            const ghostColors = ['#00ffcc', '#ff6600']
+            ghostColors.forEach((color) => {
+                const g = new THREE.PointLight(color, 0.4, 10)
+                g.userData.baseIntensity = 0.4
+                this.scene.add(g)
+                this.ghostLights.push({ light: g, offset: Math.random() * Math.PI * 2 })
+            })
+        }
 
         this._addDustMotes()
 
@@ -117,7 +128,7 @@ export class Engine {
             this.camera.aspect = window.innerWidth / window.innerHeight
             this.camera.updateProjectionMatrix()
             this.renderer.setSize(window.innerWidth, window.innerHeight)
-            this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 0.85))
+            this._applyPixelTier()
         })
 
         // ── GENERATE MAP (pass assetManager so GLB props are placed) ──
@@ -152,14 +163,16 @@ export class Engine {
         console.log(
             `[Engine] Map ready — ${this.collisionMeshes.length} colliders | ` +
             `${this.doors.length} doors | ${this.lockers.length} lockers | ` +
-            `${this.rooms.length} rooms | ${this._allRoomObjects.size} tagged objects`
+            `${this.rooms.length} rooms | ${this._allRoomObjects.size} tagged objects` +
+            (this._lowspec ? ' | LOWSPEC MODE' : '')
         )
 
         setTimeout(() => { if (this.onLoadComplete) this.onLoadComplete() }, 50)
     }
 
     _addDustMotes() {
-        const COUNT     = 350
+        if (this._lowspec) return   // skip particle shader on low-end devices
+        const COUNT     = 150
         const positions = new Float32Array(COUNT * 3)
         for (let i = 0; i < COUNT; i++) {
             positions[i * 3]     = (Math.random() - 0.5) * 60
@@ -311,11 +324,13 @@ export class Engine {
     // FRAME UPDATE
     // ─────────────────────────────────────────────────────────────
     update(elapsed, fearLevel = 0, dt = 0.016, bpm = 75) {
+        this._trackFPS(dt)
         this._updateForcedFlashlight(dt)
 
         // Ghost lights — update every 3rd frame to save CPU/GPU uniform uploads.
-        this._ghostFrameSkip = (this._ghostFrameSkip + 1) % 3
-        if (this._ghostFrameSkip === 0) {
+        this._ghostUpdateTimer += dt
+        if (this._ghostUpdateTimer >= 0.2) {
+            this._ghostUpdateTimer = 0
             this.ghostLights.forEach(({ light, offset }, i) => {
                 const angle  = elapsed * (0.1 + i * 0.06) + offset
                 const radius = 8 + Math.sin(elapsed * 0.25 + i) * 3
@@ -375,10 +390,37 @@ export class Engine {
     // ─────────────────────────────────────────────────────────────
     // ROLE — asymmetric vision (prey bright, hunter dark + flashlight)
     // ─────────────────────────────────────────────────────────────
+    _trackFPS(dt) {
+        this._fpsFrames++
+        this._fpsTimer += dt
+        if (this._fpsTimer < 1.0) return
+        this._currentFPS = this._fpsFrames / this._fpsTimer
+        this._fpsFrames = 0
+        this._fpsTimer = 0
+        this._adaptPixelRatio()
+    }
+
+    _adaptPixelRatio() {
+        const fps = this._currentFPS
+        let targetTier = this._pixelTier
+        if (fps < 40 && this._pixelTier > 0) targetTier = 0
+        else if (fps < 50 && this._pixelTier > 1) targetTier = 1
+        else if (fps > 58 && this._pixelTier < 2) targetTier = 2
+        if (targetTier === this._pixelTier) return
+        this._pixelTier = targetTier
+        this._applyPixelTier()
+    }
+
+    _applyPixelTier() {
+        if (!this.renderer) return
+        const deviceRatio = window.devicePixelRatio || 1
+        this.renderer.setPixelRatio(Math.min(deviceRatio, this._pixelRatios[this._pixelTier]))
+    }
+
     setRole(role) {
         this.role = role
         if (role === 'prey') {
-            if (this.scene.fog)        this.scene.fog.density = 0.013
+            if (this.scene.fog?.density !== undefined) this.scene.fog.density = 0.013
             if (this.ambientLight)     this.ambientLight.intensity = 1.2
             if (this.hemisphereLight)  this.hemisphereLight.intensity = 1.4
             if (this.moonLight)        this.moonLight.intensity = 0.5
@@ -394,7 +436,7 @@ export class Engine {
             // Hunter — world is dark; only the flashlight cone reveals geometry.
             // Fog at 0.055 keeps distant rooms black without cutting off the 40-unit beam.
             // A hair of ambient (0.04) lets the hunter barely read surfaces right in front.
-            if (this.scene.fog)        this.scene.fog.density = 0.055
+            if (this.scene.fog?.density !== undefined) this.scene.fog.density = 0.055
             if (this.ambientLight)     this.ambientLight.intensity = 0.04
             if (this.hemisphereLight)  this.hemisphereLight.intensity = 0.0
             if (this.moonLight)        this.moonLight.intensity = 0.0
@@ -418,7 +460,8 @@ export class Engine {
         this.renderer.render(scn, cam)
 
         // Pass 2: volumetric cone composited on top (additive, no depth write).
-        if (this.volumetric?.isOn()) {
+        // Skip in lowspec — SpotLight still illuminates, just no visible cone mesh.
+        if (!this._lowspec && this.volumetric?.isOn()) {
             const prev = this.renderer.autoClear
             this.renderer.autoClear = false
             this.renderer.render(this.volumetric.fxScene, cam)

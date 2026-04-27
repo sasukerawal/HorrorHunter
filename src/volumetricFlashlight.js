@@ -28,6 +28,7 @@ const VOLUMETRIC_FS = /* glsl */`
     uniform float uRange;
     uniform float uFear;
     uniform float uFlicker;
+    uniform float uLOD;
     uniform vec3  uColor;
 
     varying vec3 vLocalPos;
@@ -68,12 +69,12 @@ const VOLUMETRIC_FS = /* glsl */`
         // Two-scale drifting dust — avoids repeating-texture look
         vec2 driftA = vWorldPos.xz * 1.8 + vec2(uTime * 0.22, -uTime * 0.17);
         vec2 driftB = vec2(vWorldPos.y * 2.7 - uTime * 0.31, vLocalPos.z * 0.13 + uTime * 0.12);
-        float dustA = noise(driftA);
-        float dustB = noise(driftB);
+        float dustA = uLOD > 0.5 ? noise(driftA) : 0.75;
+        float dustB = uLOD > 0.5 ? noise(driftB) : 0.75;
         float dust  = mix(0.72, 1.18, dustA * 0.65 + dustB * 0.35);
 
         // Thin rolling bands — reads as suspended particles
-        float bands = 0.88 + 0.12 * sin(vLocalPos.z * 1.15 + uTime * 3.2 + dustA * 5.0);
+        float bands = uLOD > 0.5 ? (0.88 + 0.12 * sin(vLocalPos.z * 1.15 + uTime * 3.2 + dustA * 5.0)) : 1.0;
 
         // Fear micro-flicker
         float fearFlicker = 1.0 - uFear * 0.32 *
@@ -106,7 +107,7 @@ export class VolumetricFlashlight {
 
         // ───── Visible volumetric cone ─────
         const baseRadius = Math.tan(BEAM_ANGLE) * BEAM_LENGTH
-        const geo = new THREE.ConeGeometry(baseRadius, BEAM_LENGTH, 32, 12, true)
+        const geo = new THREE.ConeGeometry(baseRadius, BEAM_LENGTH, 16, 6, true)
         geo.translate(0, -BEAM_LENGTH / 2, 0)  // apex at origin
         geo.rotateX(Math.PI / 2)               // axis along -Z (camera forward)
 
@@ -117,6 +118,7 @@ export class VolumetricFlashlight {
             uRange:     { value: BEAM_LENGTH },
             uFear:      { value: 0.0 },
             uFlicker:   { value: 1.0 },
+            uLOD:       { value: 0.0 },
         }
 
         this.material = new THREE.ShaderMaterial({
@@ -140,15 +142,22 @@ export class VolumetricFlashlight {
 
         this._isOn           = true
         this._flickerTimer   = 0
+        this._uniformTimer   = 0
         this._timeAcc        = 0
         this._currentFlicker = 1.0
     }
 
     update(delta, fearLevel = 0) {
         this._timeAcc += delta
-        this.uniforms.uTime.value      = this._timeAcc
-        this.uniforms.uFear.value      = fearLevel
-        this.uniforms.uIntensity.value = 0.85 + fearLevel * 0.28
+        this._uniformTimer += delta * 1000
+        const updateMs = fearLevel > 0.6 ? 16 : fearLevel > 0.3 ? 50 : 100
+        if (this._uniformTimer >= updateMs) {
+            this._uniformTimer = 0
+            this.uniforms.uTime.value      = this._timeAcc
+            this.uniforms.uFear.value      = fearLevel
+            this.uniforms.uIntensity.value = 0.85 + fearLevel * 0.28
+            this.uniforms.uLOD.value       = fearLevel > 0.4 ? 1.0 : 0.0
+        }
 
         if (fearLevel > 0.8) {
             this._flickerTimer += delta

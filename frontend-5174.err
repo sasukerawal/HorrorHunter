@@ -1,0 +1,13 @@
+[2m3:05:05 AM[22m [33m[1m[vite][22m[39m [33mwarning: 
+[36mC:/Users/sasuke rawal/Desktop/webgame/src/biometrics.js[33m
+[0m183|      async _initMediaPipe() {
+184|          try {
+185|              const { FaceLandmarker, FilesetResolver } = await import(`${MP_CDN}/vision_bundle.mjs`)
+   |                                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+186|              const vision = await FilesetResolver.forVisionTasks(`${MP_CDN}/wasm`)
+187|              this._faceLandmarker = await FaceLandmarker.createFromOptions(vision, {[0m[33m
+The above dynamic import cannot be analyzed by Vite.
+See [34mhttps://github.com/rollup/plugins/tree/master/packages/dynamic-import-vars#limitations[33m for supported dynamic import formats. If this is intended to be left as-is, you can use the /* @vite-ignore */ comment inside the import() call to suppress this warning.
+[33m[39m
+  Plugin: [35mvite:import-analysis[39m
+  File: [36mC:/Users/sasuke rawal/Desktop/webgame/src/biometrics.js[39m

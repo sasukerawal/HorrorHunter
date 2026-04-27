@@ -48,13 +48,17 @@ const _catchToPrey   = new THREE.Vector3()
 const _catchFacing   = new THREE.Vector3()
 let jumpscareCooldown = 0
 
-// E (interact) and F (flashlight) — single key-edge handler
+// E (interact), F (flashlight), V (hold-to-talk) — key edge/hold handlers
 let eKeyPressed = false
 let fKeyPressed = false
 document.addEventListener('keydown', (e) => {
     if (e.repeat) return
     if (e.code === 'KeyE') eKeyPressed = true
     if (e.code === 'KeyF') fKeyPressed = true
+    if (e.code === 'KeyV') voice.pttHeld(true)
+})
+document.addEventListener('keyup', (e) => {
+    if (e.code === 'KeyV') voice.pttHeld(false)
 })
 
 voice.onPanicCue = (_fromId, type = 'panic') => {
@@ -142,9 +146,9 @@ lobby.onGameStart = async (assignedRole, assignedPeers) => {
 
         hud.start(role)
         hud.setFlashlightStatus(engine.flashlightOn)
-        gameRunning = true
         setupMobileControls()
-        gameLoop()
+        gameLoop()           // starts RAF chain; loop noop's until gameRunning = true
+        showControlsIntro(role)  // shows 3-second briefing then sets gameRunning = true
     }
 }
 
@@ -244,11 +248,14 @@ socket.on('peerDisconnected', ({ id }) => {
 
 let fearSyncTimer = 0
 let catchCheckTimer = 0
+let moveEmitTimer = 0
 const systemTimers = { voice: 0, bpm: 0 }
 let cachedPeerLineOfSight = true
 const losFrom = new THREE.Vector3()
-const losTo = new THREE.Vector3()
-const losDir = new THREE.Vector3()
+const losTo   = new THREE.Vector3()
+const losDir  = new THREE.Vector3()
+const _spatialFwd = new THREE.Vector3()
+const _spatialUp  = new THREE.Vector3()
 
 function checkHunterCatch() {
     if (role !== 'hunter' || !player) return
@@ -286,6 +293,97 @@ function triggerHunterJumpscare() {
     player.shakeCamera(2.0, 0.32)
     engine.forceFlashlightOff(2.0)
     hud.setFlashlightStatus(false)
+}
+
+// ─── CONTROLS INTRO (3-second role briefing before game starts) ───
+function showControlsIntro(assignedRole) {
+    const overlay = document.getElementById('controls-intro')
+    if (!overlay) { gameRunning = true; return }
+
+    const DATA = {
+        prey: {
+            title:     'YOU ARE THE PREY',
+            color:     '#00ffcc',
+            obj:       'Survive 3 minutes · Reach extraction when time runs out',
+            controls: [
+                ['WASD / L. Stick',  'Move'],
+                ['Mouse / R. Stick', 'Look'],
+                ['SPACE / A',        'Jump'],
+                ['SHIFT / LB',       'Sprint'],
+                ['E / B',            'Interact · Hide in Locker'],
+                ['Q / X',            'Phase Shift'],
+                ['V (hold)',         'Voice Chat'],
+            ],
+            abilities: [
+                ['⚡ PHASE SHIFT [Q / X]', 'Vanish for ~1 sec — hunter net cannot tag you'],
+                ['🚪 HIDE [E / B]',        'Conceal yourself inside lockers'],
+                ['💉 HEALTH PICKUPS',      'Red syringes scattered around the map restore HP'],
+            ],
+        },
+        hunter: {
+            title:     'YOU ARE THE HUNTER',
+            color:     '#ff003c',
+            obj:       'Catch every Prey before time runs out',
+            controls: [
+                ['WASD / L. Stick',    'Move'],
+                ['Mouse / R. Stick',   'Look'],
+                ['SPACE / A',          'Jump'],
+                ['SHIFT / LB',         'Sprint'],
+                ['CLICK / R. Trigger', 'Fire Net Gun'],
+                ['F / Y',              'Toggle Flashlight'],
+                ['E / B',              'Interact'],
+                ['V (hold)',           'Voice Chat'],
+            ],
+            abilities: [
+                ['🎯 NET GUN [CLICK]',     'Fire nets to catch prey — their fear widens the aim cone'],
+                ['🔦 FLASHLIGHT [F / Y]',  'Illuminate prey — spikes BPM and fear level'],
+                ['👁 BIOMETRIC FEED',       'Real-time prey fear % shown on your HUD top-right'],
+            ],
+        },
+    }
+
+    const d = DATA[assignedRole] ?? DATA.prey
+
+    document.getElementById('ci-role').textContent  = d.title
+    document.getElementById('ci-role').style.color  = d.color
+    document.getElementById('ci-objective').textContent = d.obj
+
+    document.getElementById('ci-body').innerHTML = `
+        <div class="ci-section-label">CONTROLS</div>
+        ${d.controls.map(([k, a]) => `
+            <div class="ci-row">
+                <span class="ci-key">${k}</span>
+                <span class="ci-action">${a}</span>
+            </div>`).join('')}
+        <div class="ci-section-label">ABILITIES</div>
+        ${d.abilities.map(([n, desc]) => `
+            <div class="ci-ability-row">
+                <div class="ci-ability-name">${n}</div>
+                <div class="ci-ability-desc">${desc}</div>
+            </div>`).join('')}
+    `
+
+    overlay.classList.remove('hidden')
+
+    let count = 3
+    const cdownEl = document.getElementById('ci-cdown')
+    let dismissed = false
+
+    const dismiss = () => {
+        if (dismissed) return
+        dismissed = true
+        clearInterval(iv)
+        overlay.classList.add('hidden')
+        gameRunning = true
+    }
+
+    const iv = setInterval(() => {
+        count--
+        if (cdownEl) cdownEl.textContent = count
+        if (count <= 0) dismiss()
+    }, 1000)
+
+    overlay.addEventListener('click', dismiss, { once: true })
 }
 
 // ─── MOBILE CONTROLS ───
@@ -405,6 +503,14 @@ function setupMobileControls() {
     document.getElementById('m-phase')?.addEventListener('touchstart', e => {
         e.preventDefault(); if (player) player.tryPhase(player.lastFear)
     }, { passive: false })
+
+    const mPtt = document.getElementById('m-ptt')
+    if (mPtt) {
+        mPtt.classList.remove('hidden')
+        mPtt.addEventListener('touchstart', e => { e.preventDefault(); voice.pttHeld(true) }, { passive: false })
+        mPtt.addEventListener('touchend',   e => { e.preventDefault(); voice.pttHeld(false) }, { passive: false })
+        mPtt.addEventListener('touchcancel',e => { e.preventDefault(); voice.pttHeld(false) }, { passive: false })
+    }
 }
 
 // ─── GAME LOOP ───
@@ -422,14 +528,20 @@ function gameLoop() {
     if (systemTimers.bpm >= 1.0) {
         systemTimers.bpm = 0
         biometrics.triggerEstimate()
+        // Append active fear cascade source to biometrics status line
+        if (fearSystem) hud.setFearSource(fearSystem.getActiveSource())
     }
-    const biometricBPM = biometrics.getBPM()
+    const biometricBPM      = biometrics.getBPM()
+    const biometricEmotion  = biometrics.getEmotionFear()   // 0..1 facial fear, null if no face
 
     const manualBPM = hud.getManualBPM()
     if (role === 'prey' && player) {
         fearSystem.setHunterDistance(player.getPeerDistance())
         const manualOrNull = manualBPM && manualBPM !== 75 ? manualBPM : null
-        fearSystem.update(dt, manualOrNull, biometricBPM)
+        // Pull voice-derived fear (RMS panic / breathing window) — fallback when face cam fails
+        fearSystem.setVoiceFear(voice.getVoiceFear?.() ?? 0)
+        // bpmConfidence drives the cascade tier: ≥0.35 = BPM leads; 0 = face/voice/proximity takes over
+        fearSystem.update(dt, manualOrNull, biometricBPM, biometricEmotion, biometrics.confidence)
     }
 
     const localFear = fearSystem ? fearSystem.getFear() : 0
@@ -446,7 +558,11 @@ function gameLoop() {
             netGun.setAccuracy(mods.netAccuracy ?? 1)
             netGun.update(dt)
         }
-        socket.volatile.emit('playerMove', { ...player.serialize(), flashlightOn: engine.flashlightOn })
+        moveEmitTimer += dt
+        if (moveEmitTimer >= 0.033) {   // 30 hz — halves serialization + network overhead vs every frame
+            moveEmitTimer = 0
+            socket.volatile.emit('playerMove', { ...player.serialize(), flashlightOn: engine.flashlightOn })
+        }
     }
 
     if (viewmodel && player && !player.isHiding && !player.isPhasing) {
@@ -495,6 +611,19 @@ function gameLoop() {
         }
         voice.update(voiceDt, peerDist, cachedPeerLineOfSight)
         voice.applyFearDistortion(role === 'prey' ? localFear : peerFear)
+
+        // HRTF 3D spatial audio — update listener pose + peer speaker position
+        if (player && engine.camera) {
+            engine.camera.getWorldDirection(_spatialFwd)
+            _spatialUp.copy(engine.camera.up)
+            voice.updateSpatialAudio(
+                player.position,
+                _spatialFwd,
+                _spatialUp,
+                player.peerPosition ?? null
+            )
+        }
+        hud.setMicTransmit(voice.isTransmitting())
     }
     audio.update(dt, localFear, moving, localBPM, peerDist, cachedPeerLineOfSight)
 

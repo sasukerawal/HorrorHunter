@@ -89,6 +89,28 @@ body {
   opacity: 1;
 }
 
+/* ── Mic transmit indicator — visible when local mic gate is open ── */
+#mic-indicator {
+  position: fixed;
+  bottom: 114px;
+  right: 20px;
+  z-index: 90;
+  font-size: 18px;
+  line-height: 1;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(0, 255, 204, 0.5);
+  border-radius: 8px;
+  padding: 5px 9px;
+  color: #00ffcc;
+  pointer-events: none;
+  animation: mic-glow 0.7s ease-in-out infinite alternate;
+}
+
+@keyframes mic-glow {
+  from { box-shadow: 0 0 4px rgba(0, 255, 204, 0.35); border-color: rgba(0, 255, 204, 0.4); }
+  to   { box-shadow: 0 0 12px rgba(0, 255, 204, 0.85); border-color: rgba(0, 255, 204, 0.9); }
+}
+
 @keyframes jumpscareImpact {
   0%   { transform: scale(1.08) translate(0, 0); filter: contrast(1.2); }
   35%  { transform: scale(1.16) translate(-9px, 5px); filter: contrast(1.7) hue-rotate(-8deg); }
@@ -868,6 +890,17 @@ body::after {
   margin-top: 4px;
 }
 
+/* Fear cascade source — 'FEAR ← BPM / FACE / VOICE / PROXIMITY' */
+.fear-source {
+  font-size: 0.58rem;
+  letter-spacing: 1.5px;
+  font-weight: bold;
+  margin-top: 2px;
+  opacity: 0.85;
+  text-transform: uppercase;
+  transition: color 0.4s ease;
+}
+
 /* ==================== MOBILE CONTROLS ==================== */
 #game-canvas {
   touch-action: none;
@@ -962,6 +995,262 @@ body::after {
 .m-btn:active {
   background: rgba(0, 255, 204, 0.25);
   border-color: rgba(0, 255, 204, 0.8);
+}
+
+/* ==================== LOBBY DEVICE TEST PANEL ==================== */
+#lobby-test-panel {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  background: rgba(0, 0, 0, 0.84);
+  border: 1px solid rgba(0, 255, 204, 0.28);
+  border-radius: 4px;
+  padding: 12px 14px;
+  min-width: 168px;
+  font-family: var(--font-mono);
+  z-index: 105;
+}
+
+.test-panel-title {
+  font-size: 0.6rem;
+  letter-spacing: 3px;
+  color: rgba(0, 255, 204, 0.55);
+  margin-bottom: 10px;
+  text-transform: uppercase;
+}
+
+#test-cam-wrap {
+  margin-bottom: 8px;
+}
+
+#test-cam-video {
+  display: none;
+  width: 128px;
+  height: 96px;
+  border: 1px solid rgba(0, 255, 204, 0.4);
+  border-radius: 2px;
+  object-fit: cover;
+  transform: scaleX(-1);
+  margin-bottom: 5px;
+}
+
+#test-bpm-display {
+  font-size: 0.82rem;
+  color: var(--red);
+  letter-spacing: 2px;
+  margin: 5px 0 3px;
+  text-shadow: 0 0 8px rgba(255, 0, 60, 0.45);
+  font-family: var(--font-mono);
+}
+
+#test-cam-status {
+  font-size: 0.62rem;
+  letter-spacing: 1px;
+  color: #555;
+}
+
+#test-mic-bar-wrap {
+  margin-bottom: 8px;
+}
+
+.test-label {
+  font-size: 0.58rem;
+  letter-spacing: 2px;
+  color: #555;
+  margin-bottom: 4px;
+}
+
+#test-mic-bar {
+  width: 128px;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+#test-mic-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #00cc88, #00ffcc);
+  border-radius: 4px;
+  transition: width 0.05s;
+}
+
+#test-mic-status {
+  font-size: 0.6rem;
+  color: #00ffcc;
+  letter-spacing: 1px;
+  margin-top: 3px;
+}
+
+.test-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-test {
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 1px;
+  cursor: pointer;
+  border: 1px solid rgba(0, 255, 204, 0.35);
+  background: rgba(0, 255, 204, 0.05);
+  color: var(--cyan);
+  border-radius: 2px;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.btn-test:hover {
+  background: rgba(0, 255, 204, 0.16);
+  border-color: var(--cyan);
+}
+
+.btn-test.active {
+  background: rgba(0, 255, 204, 0.2);
+  border-color: var(--cyan);
+  color: #fff;
+  box-shadow: 0 0 8px rgba(0, 255, 204, 0.25);
+}
+
+/* ==================== CONTROLS INTRO OVERLAY ==================== */
+#controls-intro {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 150;
+  animation: fadeIn 0.35s ease;
+  cursor: pointer;
+}
+
+#controls-intro-box {
+  max-width: 520px;
+  width: 92%;
+  max-height: 90vh;
+  overflow-y: auto;
+  background: rgba(4, 0, 10, 0.97);
+  border: 1px solid rgba(255, 0, 60, 0.38);
+  border-radius: 4px;
+  padding: 28px 32px;
+  box-shadow: 0 0 60px rgba(0, 0, 0, 0.9), 0 0 28px rgba(255, 0, 60, 0.1);
+  cursor: default;
+  pointer-events: all;
+}
+
+#ci-role {
+  font-family: var(--font-horror);
+  font-size: clamp(1.5rem, 5vw, 2.2rem);
+  letter-spacing: 4px;
+  margin-bottom: 6px;
+  text-align: center;
+  text-shadow: 0 0 20px currentColor;
+}
+
+#ci-objective {
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  color: #888;
+  letter-spacing: 2px;
+  text-align: center;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ci-section-label {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  letter-spacing: 4px;
+  color: #444;
+  text-transform: uppercase;
+  margin-top: 16px;
+  margin-bottom: 8px;
+}
+
+.ci-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 0;
+  gap: 12px;
+}
+
+.ci-key {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--cyan);
+  letter-spacing: 1px;
+  white-space: nowrap;
+  background: rgba(0, 255, 204, 0.07);
+  border: 1px solid rgba(0, 255, 204, 0.22);
+  padding: 2px 7px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.ci-action {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: #bbb;
+  letter-spacing: 1px;
+  text-align: right;
+}
+
+.ci-ability-row {
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.ci-ability-row:last-child {
+  border-bottom: none;
+}
+
+.ci-ability-name {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: #ddd;
+  letter-spacing: 1px;
+  margin-bottom: 2px;
+}
+
+.ci-ability-desc {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: #555;
+  letter-spacing: 1px;
+}
+
+#ci-footer {
+  margin-top: 20px;
+  text-align: center;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 14px;
+}
+
+#ci-countdown {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: #555;
+  letter-spacing: 3px;
+}
+
+#ci-cdown {
+  color: var(--cyan);
+  font-size: 1.1rem;
+}
+
+#ci-skip {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  color: #333;
+  letter-spacing: 2px;
+  margin-top: 6px;
+  text-transform: uppercase;
 }
 
 /* Peek HUD elements up on small screens */

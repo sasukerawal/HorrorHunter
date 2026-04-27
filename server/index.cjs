@@ -156,14 +156,14 @@ io.on('connection', (socket) => {
         io.to(targetId).emit('voiceIceCandidate', { fromId: socket.id, candidate })
     })
 
-    socket.on('voicePanic', ({ level }) => {
+    socket.on('voicePanic', ({ level, type = 'panic' }) => {
         const code = socket.lobbyCode
         const lobby = lobbies[code]
         if (!lobby) return
         const sender = lobby.players.find(p => p.id === socket.id)
         if (!sender || sender.role !== 'prey') return
         for (const player of lobby.players) {
-            if (player.role === 'hunter') io.to(player.id).emit('voicePanic', { fromId: socket.id, level })
+            if (player.role === 'hunter') io.to(player.id).emit('voicePanic', { fromId: socket.id, level, type })
         }
     })
 

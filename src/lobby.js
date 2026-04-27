@@ -16,6 +16,7 @@ export class Lobby {
             document.getElementById('status-msg').textContent = 'Creating lobby…'
         })
 
+
         document.getElementById('btn-join').addEventListener('click', () => {
             if (this.joinPending) return
             const code = document.getElementById('code-input').value.trim().toUpperCase()
@@ -87,6 +88,174 @@ export class Lobby {
                 startBtn.disabled = true
             })
         }
+
+        this._setupTestPanel()
+    }
+
+    _setupTestPanel() {
+        this._testCamStream = null
+        this._testMicStream = null
+        this._testMicCtx    = null
+        this._testMicActive = false
+        this._vlLobby       = null
+
+        document.getElementById('btn-test-cam')?.addEventListener('click', () => this._testCamera())
+        document.getElementById('btn-test-mic')?.addEventListener('click', () => this._testMic())
+    }
+
+    async _testCamera() {
+        const btn    = document.getElementById('btn-test-cam')
+        const status = document.getElementById('test-cam-status')
+        const video  = document.getElementById('test-cam-video')
+
+        if (this._testCamStream) {
+            this._testCamStream.getTracks().forEach(t => t.stop())
+            this._testCamStream = null
+            if (video)  { video.srcObject = null; video.style.display = 'none' }
+            if (status) { status.textContent = 'NOT TESTED'; status.style.color = '' }
+            if (btn)    { btn.textContent = '📷 CAMERA'; btn.classList.remove('active') }
+            this._stopBPMSampler()
+            return
+        }
+
+        if (status) status.textContent = 'REQUESTING…'
+        if (btn)    btn.textContent = '⏳ WAIT…'
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 } },
+                audio: false,
+            })
+            this._testCamStream = stream
+            if (video) { video.srcObject = stream; video.style.display = 'block' }
+            if (status) { status.textContent = '✓ CAMERA OK — measuring BPM…'; status.style.color = '#00ffcc' }
+            if (btn)    { btn.textContent = '📷 STOP'; btn.classList.add('active') }
+            this._startBPMSampler(video)
+        } catch (e) {
+            if (status) { status.textContent = '✗ BLOCKED'; status.style.color = '#ff003c' }
+            if (btn)    { btn.textContent = '📷 CAMERA'; btn.classList.remove('active') }
+        }
+    }
+
+    async _startBPMSampler(videoEl) {
+        this._stopBPMSampler()
+
+        const disp = document.getElementById('test-bpm-display')
+        if (disp) { disp.classList.remove('hidden'); disp.textContent = '♥ CALIBRATING…'; disp.style.color = '#555' }
+
+        let VitalLens
+        try {
+            ;({ VitalLens } = await import('vitallens'))
+        } catch (err) {
+            console.warn('[Lobby] VitalLens module unavailable:', err.message)
+            if (disp) { disp.textContent = '♥ UNAVAILABLE'; disp.style.color = '#ff003c' }
+            return
+        }
+
+        const configs = [
+            { method: 'vitallens', apiKey: '84oI7bhQAsc1a4gPF9gT3bgKnig0mnV1Di5EuSec' },
+            { method: 'pos' },
+        ]
+        for (const cfg of configs) {
+            try {
+                const vl = new VitalLens(cfg)
+                vl.addVideoStream(this._testCamStream, videoEl)
+                vl.startVideoStream()
+                this._vlLobby = vl
+                console.log(`[Lobby] VitalLens started (${cfg.method})`)
+                break
+            } catch (err) {
+                console.warn(`[Lobby] VitalLens ${cfg.method} failed:`, err.message)
+            }
+        }
+
+        if (!this._vlLobby) {
+            if (disp) { disp.textContent = '♥ UNAVAILABLE'; disp.style.color = '#ff003c' }
+            return
+        }
+
+        this._vlLobby.addEventListener('vitals', (result) => {
+            const hr = result.vital_signs?.heart_rate ?? result.vitals?.heart_rate
+            if (!hr?.value || !disp) return
+            const bpm = Math.round(hr.value)
+            disp.textContent = `♥ ${bpm} BPM`
+            disp.style.color = bpm >= 100 ? '#ff003c' : '#00ffcc'
+            disp.style.textShadow = bpm >= 100
+                ? '0 0 10px rgba(255,0,60,0.7)'
+                : '0 0 10px rgba(0,255,204,0.5)'
+        })
+    }
+
+    _stopBPMSampler() {
+        try { this._vlLobby?.stopVideoStream?.() } catch {}
+        this._vlLobby = null
+        const disp = document.getElementById('test-bpm-display')
+        if (disp) { disp.classList.add('hidden'); disp.textContent = 'BPM: --' }
+    }
+
+    async _testMic() {
+        const btn   = document.getElementById('btn-test-mic')
+        const wrap  = document.getElementById('test-mic-bar-wrap')
+        const fill  = document.getElementById('test-mic-fill')
+        const micSt = document.getElementById('test-mic-status')
+
+        if (this._testMicActive) {
+            this._testMicActive = false
+            this._testMicStream?.getTracks().forEach(t => t.stop())
+            this._testMicStream = null
+            try { this._testMicCtx?.close() } catch {}
+            this._testMicCtx = null
+            if (wrap) wrap.classList.add('hidden')
+            if (btn)  { btn.textContent = '🎙 MIC'; btn.classList.remove('active') }
+            return
+        }
+
+        if (btn) btn.textContent = '⏳ WAIT…'
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+            this._testMicStream = stream
+            const ctx      = new (window.AudioContext || window.webkitAudioContext)()
+            this._testMicCtx = ctx
+            const source   = ctx.createMediaStreamSource(stream)
+            const analyser = ctx.createAnalyser()
+            analyser.fftSize = 256
+            source.connect(analyser)
+            const buf = new Uint8Array(analyser.frequencyBinCount)
+
+            if (wrap)  wrap.classList.remove('hidden')
+            if (micSt) { micSt.textContent = 'MIC ACTIVE'; micSt.style.color = '#00ffcc' }
+            if (btn)   { btn.textContent = '🎙 STOP'; btn.classList.add('active') }
+
+            this._testMicActive = true
+            const tick = () => {
+                if (!this._testMicActive) { if (fill) fill.style.width = '0%'; return }
+                analyser.getByteFrequencyData(buf)
+                const avg = buf.reduce((a, b) => a + b, 0) / buf.length
+                if (fill) fill.style.width = `${Math.min(100, avg * 2.8)}%`
+                requestAnimationFrame(tick)
+            }
+            tick()
+        } catch (e) {
+            if (micSt) { micSt.textContent = 'MIC BLOCKED'; micSt.style.color = '#ff003c' }
+            if (wrap)  wrap.classList.remove('hidden')
+            if (btn)   { btn.textContent = '🎙 MIC'; btn.classList.remove('active') }
+        }
+    }
+
+    _stopTestStreams() {
+        this._stopBPMSampler()
+        if (this._testCamStream) {
+            this._testCamStream.getTracks().forEach(t => t.stop())
+            this._testCamStream = null
+        }
+        this._testMicActive = false
+        if (this._testMicStream) {
+            this._testMicStream.getTracks().forEach(t => t.stop())
+            this._testMicStream = null
+        }
+        try { this._testMicCtx?.close() } catch {}
+        this._testMicCtx = null
     }
 
     _setupSocketEvents() {
@@ -148,6 +317,7 @@ export class Lobby {
     }
 
     _startGame(role, peers) {
+        this._stopTestStreams()
         // Hide lobby
         document.getElementById('ui-overlay').classList.add('hidden')
         // Show HUD

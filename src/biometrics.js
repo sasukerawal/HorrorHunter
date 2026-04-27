@@ -1,45 +1,18 @@
-// src/biometrics.js — Camera-based rPPG Heart-Rate Estimator
-//
-// PIPELINE STAGES:
-//   A. Camera frame capture — 96×72 px canvas for fast pixel reads.
-//   B. Face detection — MediaPipe FaceLandmarker (GPU-delegated, CDN-loaded lazily)
-//      provides precise forehead/cheek landmarks. Falls back to fixed centre ROI.
-//   C. Skin-pixel classification — luminance + hue filter.
-//   D. Chrominance signal — (R−G)/(R+G+B) per sample, EMA-smoothed.
-//   E. Signal buffer — 15 seconds at 15 fps ≈ 225 samples.
-//   F. BPM estimation —
-//        1. Linear detrend (remove baseline drift)
-//        2. Hann window (reduce spectral leakage)
-//        3. Zero-mean + unit-variance normalisation
-//        4. Normalised autocorrelation over BPM lag range
-//        5. Parabolic interpolation around the peak lag (sub-sample precision)
-//        6. Temporal smoothing + ±10 BPM/s rate limit
+// src/biometrics.js — VitalLens rPPG (BPM + RR) + MediaPipe emotion blendshapes
 
-const SAMPLE_RATE          = 15
-const SAMPLE_INTERVAL      = 1 / SAMPLE_RATE
-const FACE_DETECT_INTERVAL = 0.40        // run MP every 0.4 s — good tracking, low overhead
-const BUFFER_SECONDS       = 15          // more data → more stable autocorrelation
-const MIN_ANALYSIS_SECONDS = 6
-const MIN_BPM              = 48
-const MAX_BPM              = 180
-const SMOOTH_ALPHA         = 0.15   // low alpha = signal preserving; 0.85 was cutting off rPPG frequencies
-const CONFIDENCE_THRESHOLD = 0.12        // slightly lower than 0.15 — more estimates accepted
+const FACE_DETECT_INTERVAL = 0.40
 
-// MediaPipe CDN (pinned to a stable release)
 const MP_CDN   = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17'
 const MP_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'
 
-// Landmark indices chosen for forehead centre + bilateral cheeks
-// (numbers per MediaPipe Face Mesh 478-point topology)
-const FACE_ROI_LANDMARKS = [10, 9, 8, 107, 336, 116, 147, 187, 207, 345, 376, 411, 427]
-const FOREHEAD_LM        = [10, 9, 8]
-const LEFT_CHEEK_LM      = [116, 147, 187, 207]
-const RIGHT_CHEEK_LM     = [345, 376, 411, 427]
-const MOTION_LM          = [1, 4, 10, 152]
-const MOTION_THRESHOLD   = 0.008
+const FOREHEAD_LM   = [10, 9, 8]
+const LEFT_CHEEK_LM = [116, 147, 187, 207]
+const RIGHT_CHEEK_LM = [345, 376, 411, 427]
+const MOTION_LM     = [1, 4, 10, 152]
+const MOTION_THRESHOLD = 0.008
+const ROI_SMOOTH    = 0.35
 
-// ROI temporal smoothing — how fast the tracked box follows the face
-const ROI_SMOOTH = 0.35   // 0=instant, 1=frozen; lower = follows faster
+const VL_API_KEY = '84oI7bhQAsc1a4gPF9gT3bgKnig0mnV1Di5EuSec'
 
 export class Biometrics {
     constructor() {
@@ -49,26 +22,29 @@ export class Biometrics {
         this.currentBPM = null
         this.confidence = 0
 
-        this._sampleTimer   = 0
-        this._estimateTimer = 0
-        this._detectTimer   = 0
-        this._frameBuffer   = []
-        this._smoothedSignal = null
+        this._detectTimer = 0
+        this._canvas      = null
+        this._canvasCtx   = null
+        this._faceBox        = null
+        this._rawFaceBox     = null
+        this._roiForehead    = null
+        this._roiLeftCheek   = null
+        this._roiRightCheek  = null
+        this._prevLandmarks  = null
+        this._motionScore    = 0
+        this._lastFaceSeen   = 0
 
-        this._canvas    = null
-        this._canvasCtx = null
-        this._faceBox      = null         // current smoothed ROI {x, y, w, h}
-        this._rawFaceBox   = null         // last raw landmark box before smoothing
-        this._roiForehead   = null
-        this._roiLeftCheek  = null
-        this._roiRightCheek = null
-        this._prevLandmarks = null
-        this._motionScore   = 0
-        this._lastFaceSeen = 0
-        this._lastValidBPM = null
+        this._emotionFear      = 0
+        this._emotionTension   = 0
+        this._emotionAvailable = false
+        this._lastBlendshapes  = null
 
         this._faceLandmarker      = null
         this._faceLandmarkerReady = false
+
+        this._bpmStatus       = 'calibrating'
+        this._respiratoryRate = null
+        this._vl              = null
     }
 
     // ── PUBLIC ─────────────────────────────────────────────────────────────────
@@ -82,7 +58,7 @@ export class Biometrics {
                 this.videoEl.style.display = 'none'
                 this.videoEl.setAttribute('playsinline', '')
                 this.videoEl.setAttribute('autoplay', '')
-                this.videoEl.muted = true   // required for autoplay on mobile & modern browsers
+                this.videoEl.muted = true
                 document.body.appendChild(this.videoEl)
             }
 
@@ -103,17 +79,18 @@ export class Biometrics {
                 console.warn('[Biometrics] video.play() blocked:', playErr.message)
             }
 
-            this._canvas        = document.createElement('canvas')
+            // Small canvas for MediaPipe face detection
+            this._canvas       = document.createElement('canvas')
             this._canvas.width  = 96
             this._canvas.height = 72
             this._canvasCtx = this._canvas.getContext('2d', { willReadFrequently: true })
 
             this.available = true
-            this._setIndicator('CAM ROI — LOADING FACE AI…')
+            this._setIndicator('CAM — LOADING VITALLENS…')
 
-            // Fire-and-forget: rPPG starts with fixed ROI immediately and upgrades
-            // to precise landmark tracking once the model downloads (~5 MB).
+            // Both pipelines start concurrently; VitalLens drives BPM, MediaPipe drives emotion
             this._initMediaPipe()
+            this._initVitalLens()
 
             return true
         } catch (err) {
@@ -124,54 +101,37 @@ export class Biometrics {
         }
     }
 
+    /** Called each game tick — only drives MediaPipe face detection now.
+     *  VitalLens is event-driven and self-paced. */
     update(dt) {
         if (!this.available || !this.videoEl || !this._canvasCtx) return
         if (this.videoEl.readyState < 2) return
 
-        // ── Stage B: face detection at a fixed interval ──
         this._detectTimer += dt
         if (this._detectTimer >= FACE_DETECT_INTERVAL) {
             this._detectTimer = 0
             this._detectFace()
         }
-
-        // ── Stage C+D: sample at SAMPLE_RATE ──
-        this._sampleTimer += dt
-        if (this._sampleTimer < SAMPLE_INTERVAL) return
-        this._sampleTimer = 0
-
-        const raw = this._sampleFaceSignal()
-        if (raw === null) return
-
-        this._smoothedSignal = this._smoothedSignal === null
-            ? raw
-            : SMOOTH_ALPHA * this._smoothedSignal + (1 - SMOOTH_ALPHA) * raw
-
-        const now = performance.now() / 1000
-        this._frameBuffer.push({ time: now, value: this._smoothedSignal })
-
-        const cutoff = now - BUFFER_SECONDS
-        while (this._frameBuffer.length && this._frameBuffer[0].time < cutoff) {
-            this._frameBuffer.shift()
-        }
-
-        // ── Stage F: periodic BPM estimation ──
     }
 
+    /** Called once per second by main.js — just refreshes the HUD indicator.
+     *  BPM updates arrive via VitalLens 'vitals' events asynchronously. */
     triggerEstimate() {
         if (!this.available) return
-        const est = this._estimateBPM()
-        if (est) {
-            this.currentBPM = est.bpm
-            this.confidence = est.confidence
-        }
         this._setIndicator(this._statusText())
     }
 
-    getBPM()       { return this.currentBPM }
-    isAvailable()  { return this.available  }
+    getBPM()             { return this.currentBPM }
+    isAvailable()        { return this.available  }
+    getBPMStatus()       { return this._bpmStatus }
+    getRespiratoryRate() { return this._respiratoryRate }
+    getEmotionFear()     { return this._emotionAvailable ? this._emotionFear    : null }
+    getEmotionTension()  { return this._emotionAvailable ? this._emotionTension : null }
+    isEmotionAvailable() { return this._emotionAvailable }
 
     destroy() {
+        try { this._vl?.stopVideoStream?.() } catch {}
+        this._vl = null
         this.stream?.getTracks().forEach(t => t.stop())
         try { this._faceLandmarker?.close() } catch {}
         this._faceLandmarker      = null
@@ -182,7 +142,67 @@ export class Biometrics {
         this._setIndicator('CAM OFF')
     }
 
-    // ── PRIVATE — MEDIAPIPE INIT ────────────────────────────────────────────────
+    // ── PRIVATE — VITALLENS INIT ───────────────────────────────────────────────
+
+    async _initVitalLens() {
+        let VitalLens
+        try {
+            ;({ VitalLens } = await import('vitallens'))
+        } catch (err) {
+            console.warn('[Biometrics] VitalLens module load failed:', err.message)
+            this._bpmStatus = 'unavailable'
+            this._setIndicator('VITALLENS UNAVAILABLE')
+            return
+        }
+
+        // Try cloud API first, fall back to local rPPG
+        const configs = [
+            { method: 'vitallens', apiKey: VL_API_KEY },
+            { method: 'pos' },
+        ]
+        for (const cfg of configs) {
+            try {
+                const vl = new VitalLens(cfg)
+                vl.addVideoStream(this.stream, this.videoEl)
+                vl.startVideoStream()
+                this._vl = vl
+                console.log(`[Biometrics] VitalLens started (${cfg.method})`)
+                break
+            } catch (err) {
+                console.warn(`[Biometrics] VitalLens ${cfg.method} failed:`, err.message)
+            }
+        }
+
+        if (!this._vl) {
+            this._bpmStatus = 'unavailable'
+            this._setIndicator('VITALLENS UNAVAILABLE')
+            return
+        }
+
+        this._vl.addEventListener('vitals', (result) => {
+            const hr = result.vital_signs?.heart_rate ?? result.vitals?.heart_rate
+            const rr = result.vital_signs?.respiratory_rate ?? result.vitals?.respiratory_rate
+
+            if (hr?.value != null) {
+                this.currentBPM = Math.round(hr.value)
+                this.confidence  = typeof hr.confidence === 'number' ? hr.confidence : 0
+                this._bpmStatus  = this.confidence >= 0.35 ? 'stable' : 'calibrating'
+            }
+            if (rr?.value != null) {
+                this._respiratoryRate = Math.round(rr.value)
+            }
+            this._setIndicator(this._statusText())
+        })
+
+        this._vl.addEventListener('streamReset', () => {
+            console.warn('[Biometrics] VitalLens stream reset — waiting for reconnect')
+            this.confidence = 0
+            this._bpmStatus = 'calibrating'
+            this._setIndicator('VITALLENS RECONNECTING…')
+        })
+    }
+
+    // ── PRIVATE — MEDIAPIPE INIT ───────────────────────────────────────────────
 
     async _initMediaPipe() {
         try {
@@ -195,19 +215,18 @@ export class Biometrics {
                 },
                 runningMode: 'VIDEO',
                 numFaces: 1,
-                outputFaceBlendshapes: false,
+                outputFaceBlendshapes: true,
                 outputFacialTransformationMatrixes: false,
             })
             this._faceLandmarkerReady = true
-            console.log('[Biometrics] MediaPipe FaceLandmarker ready')
-            this._setIndicator('CAM FACE LOCK — CALIBRATING…')
+            console.log('[Biometrics] MediaPipe FaceLandmarker ready (emotion only)')
         } catch (err) {
-            console.warn('[Biometrics] MediaPipe unavailable (fixed ROI fallback):', err.message)
+            console.warn('[Biometrics] MediaPipe unavailable:', err.message)
             this._faceLandmarkerReady = false
         }
     }
 
-    // ── PRIVATE — STAGE B: FACE DETECTION ─────────────────────────────────────
+    // ── PRIVATE — FACE DETECTION (emotion blendshapes) ───────────────────────
 
     _detectFace() {
         if (!this._faceLandmarkerReady || !this._faceLandmarker) return
@@ -219,37 +238,79 @@ export class Biometrics {
                 this._updateMotionScore(landmarks)
                 const raw = this._landmarksToBox(landmarks)
                 if (raw) {
-                    this._rawFaceBox = raw
+                    this._rawFaceBox  = raw
                     this._lastFaceSeen = performance.now()
-                    this._faceBox = this._smoothROI(this._faceBox, raw)
+                    this._faceBox     = this._smoothROI(this._faceBox, raw)
                 }
-                this._roiForehead   = this._smoothROI(this._roiForehead, this._extractROI(landmarks, FOREHEAD_LM))
-                this._roiLeftCheek  = this._smoothROI(this._roiLeftCheek, this._extractROI(landmarks, LEFT_CHEEK_LM))
+                this._roiForehead   = this._smoothROI(this._roiForehead,   this._extractROI(landmarks, FOREHEAD_LM))
+                this._roiLeftCheek  = this._smoothROI(this._roiLeftCheek,  this._extractROI(landmarks, LEFT_CHEEK_LM))
                 this._roiRightCheek = this._smoothROI(this._roiRightCheek, this._extractROI(landmarks, RIGHT_CHEEK_LM))
+                this._processBlendshapes(results.faceBlendshapes?.[0]?.categories)
             } else if (performance.now() - this._lastFaceSeen > 2500) {
                 this._clearTrackedROIs()
+                this._emotionAvailable = false
             }
         } catch (err) {
             console.warn('[Biometrics] FaceLandmarker detect error:', err.message)
             this._faceLandmarkerReady = false
             this._clearTrackedROIs()
+            this._emotionAvailable = false
         }
     }
 
+    /**
+     * Convert MediaPipe blendshapes → fear/tension scores.
+     * Fear = wide eyes + raised inner brows + parted/stretched mouth (FACS AU1+AU5+AU20+AU26).
+     * Tension = jaw clench + lip press + brow furrow.
+     */
+    _processBlendshapes(categories) {
+        if (!categories || !categories.length) {
+            this._emotionAvailable = false
+            return
+        }
+        this._lastBlendshapes = categories
+        const get = (name) => {
+            const c = categories.find(c => c.categoryName === name)
+            return c ? c.score : 0
+        }
+        const browInnerUp  = get('browInnerUp')
+        const eyeWide      = (get('eyeWideLeft')      + get('eyeWideRight'))      * 0.5
+        const mouthStretch = (get('mouthStretchLeft') + get('mouthStretchRight')) * 0.5
+        const jawOpen      = get('jawOpen')
+        const mouthFrown   = (get('mouthFrownLeft')   + get('mouthFrownRight'))   * 0.5
+        const browDown     = (get('browDownLeft')     + get('browDownRight'))     * 0.5
+        const mouthPress   = (get('mouthPressLeft')   + get('mouthPressRight'))   * 0.5
+
+        const rawFear =
+            0.40 * browInnerUp +
+            0.30 * eyeWide +
+            0.15 * mouthStretch +
+            0.10 * jawOpen +
+            0.05 * mouthFrown
+        const rawTension =
+            0.45 * mouthPress +
+            0.35 * browDown +
+            0.20 * (1 - jawOpen)
+
+        const SMOOTH = 0.7
+        this._emotionFear    = this._emotionFear    * SMOOTH + Math.max(0, Math.min(1, rawFear * 1.4))  * (1 - SMOOTH)
+        this._emotionTension = this._emotionTension * SMOOTH + Math.max(0, Math.min(1, rawTension))      * (1 - SMOOTH)
+        this._emotionAvailable = true
+    }
+
     _clearTrackedROIs() {
-        this._faceBox = null
-        this._rawFaceBox = null
-        this._roiForehead = null
-        this._roiLeftCheek = null
+        this._faceBox       = null
+        this._rawFaceBox    = null
+        this._roiForehead   = null
+        this._roiLeftCheek  = null
         this._roiRightCheek = null
         this._prevLandmarks = null
-        this._motionScore = 0
+        this._motionScore   = 0
     }
 
     _updateMotionScore(landmarks) {
         if (this._prevLandmarks) {
-            let sumDist = 0
-            let count = 0
+            let sumDist = 0, count = 0
             for (const idx of MOTION_LM) {
                 const a = this._prevLandmarks[idx]
                 const b = landmarks[idx]
@@ -265,7 +326,7 @@ export class Biometrics {
     }
 
     _smoothROI(prev, raw) {
-        if (!raw) return prev
+        if (!raw)  return prev
         if (!prev) return { ...raw }
         return {
             x: prev.x * ROI_SMOOTH + raw.x * (1 - ROI_SMOOTH),
@@ -300,10 +361,11 @@ export class Biometrics {
     }
 
     _landmarksToBox(landmarks) {
+        const FACE_ROI_LM = [10, 9, 8, 107, 336, 116, 147, 187, 207, 345, 376, 411, 427]
         const w = this._canvas.width
         const h = this._canvas.height
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-        for (const idx of FACE_ROI_LANDMARKS) {
+        for (const idx of FACE_ROI_LM) {
             const lm = landmarks[idx]
             if (!lm) continue
             const px = lm.x * w
@@ -323,212 +385,20 @@ export class Biometrics {
         }
     }
 
-    // ── PRIVATE — STAGE C+D: PIXEL SAMPLING ───────────────────────────────────
-
-    _sampleFaceSignal() {
-        const w = this._canvas.width
-        const h = this._canvas.height
-        this._canvasCtx.drawImage(this.videoEl, 0, 0, w, h)
-
-        const boxes = [this._roiForehead, this._roiLeftCheek, this._roiRightCheek].filter(Boolean)
-        if (boxes.length) {
-            let sum = 0
-            let count = 0
-            for (const box of boxes) {
-                const chroma = this._chromaFromBox(box)
-                if (chroma === null) continue
-                sum += chroma
-                count++
-            }
-            return count ? sum / count : null
-        }
-
-        return this._chromaFromBox(this._getROI(w, h))
-    }
-
-    _chromaFromBox(roi) {
-        const w = this._canvas.width
-        const h = this._canvas.height
-        const x0  = Math.max(0, Math.floor(roi.x))
-        const y0  = Math.max(0, Math.floor(roi.y))
-        const x1  = Math.min(w, Math.ceil(roi.x + roi.w))
-        const y1  = Math.min(h, Math.ceil(roi.y + roi.h))
-        if (x1 <= x0 || y1 <= y0) return null
-
-        const { data } = this._canvasCtx.getImageData(x0, y0, x1 - x0, y1 - y0)
-        let rSum = 0, gSum = 0, bSum = 0, count = 0
-
-        for (let i = 0; i < data.length; i += 16) {  // step=16 → every 4th pixel
-            const r = data[i], g = data[i + 1], b = data[i + 2]
-            const lum = 0.299 * r + 0.587 * g + 0.114 * b
-            if (lum < 30 || lum > 230) continue
-            if (r < 50 || r < b)        continue
-            if (g > r || b > r * 0.85)  continue
-            rSum += r; gSum += g; bSum += b
-            count++
-        }
-
-        if (count < 15) return null
-        const total = rSum + gSum + bSum
-        return total > 0 ? (rSum - gSum) / total : null
-    }
-
-    _getROI(width, height) {
-        if (this._faceBox) return this._faceBox
-        return { x: width * 0.28, y: height * 0.12, w: width * 0.44, h: height * 0.55 }
-    }
-
-    // ── PRIVATE — STAGE F: BPM ESTIMATION VIA AUTOCORRELATION ────────────────
-
-    _estimateBPM() {
-        const samples = this._frameBuffer
-        if (samples.length < SAMPLE_RATE * MIN_ANALYSIS_SECONDS) return null
-        if (this._motionScore > MOTION_THRESHOLD) {
-            console.log('[Bio] Motion artifact - holding BPM')
-            return null
-        }
-
-        const duration = samples[samples.length - 1].time - samples[0].time
-        if (duration < MIN_ANALYSIS_SECONDS) return null
-
-        // 1. Uniform resample
-        const uniform = this._resample(samples, SAMPLE_RATE)
-        if (uniform.length < SAMPLE_RATE * MIN_ANALYSIS_SECONDS) return null
-
-        // 2. Linear detrend — removes slow baseline drift before windowing
-        const detrended = this._detrend(uniform)
-
-        // 3. Hann window
-        const windowed = this._applyHannWindow(detrended)
-
-        // 4. Zero-mean + unit-variance normalisation
-        const mean     = windowed.reduce((a, v) => a + v, 0) / windowed.length
-        const centred  = windowed.map(v => v - mean)
-        const variance = centred.reduce((a, v) => a + v * v, 0) / centred.length
-        const std      = Math.sqrt(variance)
-        if (std < 0.000005) return null
-        const normed = centred.map(v => v / std)
-        const filtered = this._bandpassFilter(normed, SAMPLE_RATE)
-
-        // 5. Normalised autocorrelation
-        const lagMin = Math.ceil((60 / MAX_BPM) * SAMPLE_RATE)
-        const lagMax = Math.floor((60 / MIN_BPM) * SAMPLE_RATE)
-
-        const scores = new Float32Array(lagMax + 1)
-        let bestLag = 0, bestScore = -Infinity
-        for (let lag = lagMin; lag <= lagMax; lag++) {
-            let s = 0, n = 0
-            for (let i = lag; i < filtered.length; i++) {
-                s += filtered[i] * filtered[i - lag]
-                n++
-            }
-            scores[lag] = n ? s / n : -Infinity
-            if (scores[lag] > bestScore) { bestScore = scores[lag]; bestLag = lag }
-        }
-
-        if (!bestLag || bestScore < CONFIDENCE_THRESHOLD) return null
-
-        // 6. Parabolic interpolation — sub-lag peak precision
-        let exactLag = bestLag
-        if (bestLag > lagMin && bestLag < lagMax) {
-            const y0 = scores[bestLag - 1]
-            const y1 = scores[bestLag]
-            const y2 = scores[bestLag + 1]
-            const denom = y0 - 2 * y1 + y2
-            if (Math.abs(denom) > 1e-10) {
-                exactLag = bestLag + 0.5 * (y0 - y2) / denom
-            }
-        }
-
-        let bpm = Math.round((60 * SAMPLE_RATE) / exactLag)
-
-        // 7. Temporal smoothing + rate limit
-        if (this._lastValidBPM !== null) {
-            const maxStep = 10
-            const delta   = Math.max(-maxStep, Math.min(maxStep, bpm - this._lastValidBPM))
-            bpm = Math.round(this._lastValidBPM * 0.65 + (this._lastValidBPM + delta) * 0.35)
-        }
-
-        bpm = Math.max(MIN_BPM, Math.min(MAX_BPM, bpm))
-        this._lastValidBPM = bpm
-
-        return { bpm, confidence: Math.max(0, Math.min(1, bestScore)) }
-    }
-
-    // ── PRIVATE — HELPERS ──────────────────────────────────────────────────────
-
-    _resample(samples, rate) {
-        const result = []
-        const step   = 1 / rate
-        let si = 0
-        for (let t = samples[0].time; t <= samples[samples.length - 1].time; t += step) {
-            while (si < samples.length - 2 && samples[si + 1].time < t) si++
-            const a    = samples[si]
-            const b    = samples[Math.min(si + 1, samples.length - 1)]
-            const span = Math.max(0.0001, b.time - a.time)
-            const mix  = Math.max(0, Math.min(1, (t - a.time) / span))
-            result.push(a.value + (b.value - a.value) * mix)
-        }
-        return result
-    }
-
-    /** Remove linear trend (least-squares line fit and subtract) */
-    _detrend(values) {
-        const n = values.length
-        if (n < 2) return values
-        let sx = 0, sy = 0, sxx = 0, sxy = 0
-        for (let i = 0; i < n; i++) {
-            sx  += i
-            sy  += values[i]
-            sxx += i * i
-            sxy += i * values[i]
-        }
-        const denom = n * sxx - sx * sx
-        if (Math.abs(denom) < 1e-10) return values
-        const slope     = (n * sxy - sx * sy) / denom
-        const intercept = (sy - slope * sx) / n
-        return values.map((v, i) => v - (slope * i + intercept))
-    }
-
-    _applyHannWindow(values) {
-        const N = values.length
-        return values.map((v, i) => v * 0.5 * (1 - Math.cos((2 * Math.PI * i) / (N - 1))))
-    }
-
-    _bandpassFilter(signal, sampleRate) {
-        const out = new Float32Array(signal.length)
-        if (!signal.length) return out
-
-        const highRC = 1.0 / (2 * Math.PI * 0.7)
-        const lowRC  = 1.0 / (2 * Math.PI * 4.0)
-        const dt     = 1.0 / sampleRate
-        const highA  = highRC / (highRC + dt)
-        const lowA   = dt / (lowRC + dt)
-
-        let prev = signal[0]
-        let prevOut = 0
-        for (let i = 0; i < signal.length; i++) {
-            prevOut = highA * (prevOut + signal[i] - prev)
-            prev = signal[i]
-            out[i] = prevOut
-        }
-
-        let lpPrev = out[0]
-        for (let i = 1; i < out.length; i++) {
-            lpPrev = lpPrev + lowA * (out[i] - lpPrev)
-            out[i] = lpPrev
-        }
-        return out
-    }
+    // ── PRIVATE — HUD ─────────────────────────────────────────────────────────
 
     _statusText() {
         if (!this.available) return 'CAM OFF'
-        if (!this.currentBPM) {
-            if (this._faceLandmarkerReady && this._faceBox) return 'CAM FACE LOCK — CALIBRATING…'
-            return this._faceLandmarkerReady ? 'CAM MP — SEARCHING…' : 'CAM ROI — CALIBRATING…'
-        }
-        const src = this._faceLandmarkerReady && this._faceBox ? 'MP' : 'ROI'
-        return `PULSE ${this.currentBPM} BPM [${src} ${Math.round(this.confidence * 100)}%]`
+        if (this._bpmStatus === 'unavailable') return 'VITALLENS UNAVAILABLE'
+        const emoStr = this._emotionAvailable
+            ? ` · FACE ${Math.round(this._emotionFear * 100)}%`
+            : ''
+        const rrStr  = this._respiratoryRate != null
+            ? ` · RR ${this._respiratoryRate}`
+            : ''
+        if (!this.currentBPM) return `VL CALIBRATING…${emoStr}`
+        const tag = this._bpmStatus === 'stable' ? 'OK' : 'CAL'
+        return `PULSE ${this.currentBPM} BPM [VL ${Math.round(this.confidence * 100)}%][${tag}]${rrStr}${emoStr}`
     }
 
     _setIndicator(text) {

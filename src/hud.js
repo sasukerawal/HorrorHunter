@@ -26,12 +26,15 @@ export class HUD {
         this.flashlightEl   = document.getElementById('flashlight-status')
         this.hideHintEl     = document.getElementById('hide-hint')
         this.hpEl           = document.getElementById('hud-hp')
+        this.micIndicatorEl  = document.getElementById('mic-indicator')
+        this.fearSourceEl    = document.getElementById('fear-source')
 
         this.totalTime = 180 // 3 minutes
         this.timeLeft = this.totalTime
         this.role = 'prey'
         this.fearHistory = new Array(200).fill(0)
         this.running = false
+        this._graphTimer = 0
 
         // Net gun bloom (sized by Prey fear, set by main.js)
         this.crosshairBloom = 0
@@ -126,6 +129,25 @@ export class HUD {
             this.jumpscareEl.classList.remove('active')
             this.jumpscareEl.classList.add('hidden')
         }, duration)
+    }
+
+    /**
+     * Show which cascade tier is driving fear: 'BPM' | 'Face' | 'Voice' | 'Proximity'.
+     * Called once per second after biometrics.triggerEstimate().
+     */
+    setFearSource(source) {
+        if (!this.fearSourceEl) return
+        const COLORS = { BPM: '#00ffcc', Face: '#ff9900', Voice: '#ffff00', Proximity: '#888888' }
+        this.fearSourceEl.textContent = `FEAR ← ${source.toUpperCase()}`
+        this.fearSourceEl.style.color = COLORS[source] ?? '#888888'
+        this.fearSourceEl.classList.remove('hidden')
+    }
+
+    /** Show/hide the mic transmit indicator — lights up when VAD gate is open or V held. */
+    setMicTransmit(on) {
+        if (!this.micIndicatorEl) return
+        this.micIndicatorEl.classList.toggle('hidden', !on)
+        this.micIndicatorEl.classList.toggle('active', !!on)
     }
 
     showVoicePanicPulse(duration = 350) {
@@ -223,10 +245,14 @@ export class HUD {
             this.debugBpmDisplay.textContent = this.debugSlider.value
         }
 
-        // Fear pulse wave (3d-force-graph data-binding pattern applied to canvas)
-        this.fearHistory.shift()
-        this.fearHistory.push(fearLevel)
-        this._drawFearGraph(fearLevel)
+        // Fear pulse wave — throttled to 20 fps (canvas 2D draws are expensive)
+        this._graphTimer += dt
+        if (this._graphTimer >= 0.05) {
+            this._graphTimer = 0
+            this.fearHistory.shift()
+            this.fearHistory.push(fearLevel)
+            this._drawFearGraph(fearLevel)
+        }
     }
 
     _drawFearGraph(fearLevel) {

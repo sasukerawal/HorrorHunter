@@ -73,26 +73,53 @@ function loadTextures(renderer) {
 }
 
 function createMaterials(textures) {
-    const wallMat  = new THREE.MeshStandardMaterial({
-        map:       textures?.wall  ?? null,
-        color:     '#cccccc',
-        roughness: 0.92,
-        metalness: 0.0,
+    // MeshLambertMaterial — diffuse-only, no PBR BRDF. ~3× cheaper per fragment.
+    // The scene is dark horror; specular highlights are invisible anyway.
+    const wallMat  = new THREE.MeshLambertMaterial({
+        map:   textures?.wall  ?? null,
+        color: '#cccccc',
     })
-    const floorMat = new THREE.MeshStandardMaterial({
-        map:       textures?.floor ?? null,
-        color:     '#cccccc',
-        roughness: 0.95,
-        metalness: 0.0,
+    const floorMat = new THREE.MeshLambertMaterial({
+        map:   textures?.floor ?? null,
+        color: '#cccccc',
     })
     return {
         wall:       wallMat,
         floor:      floorMat,
-        ceiling:    new THREE.MeshStandardMaterial({ color: '#2a2a2a', roughness: 0.95 }),
-        door:       new THREE.MeshStandardMaterial({ color: '#5a3a20', roughness: 0.95, metalness: 0.05 }),
-        locker:     new THREE.MeshStandardMaterial({ color: '#2a3138', roughness: 0.55, metalness: 0.7 }),
-        lockerDoor: new THREE.MeshStandardMaterial({ color: '#1d242a', roughness: 0.45, metalness: 0.8 }),
+        ceiling:    new THREE.MeshLambertMaterial({ color: '#2a2a2a' }),
+        door:       new THREE.MeshLambertMaterial({ color: '#5a3a20' }),
+        locker:     new THREE.MeshLambertMaterial({ color: '#2a3138' }),
+        lockerDoor: new THREE.MeshLambertMaterial({ color: '#1d242a' }),
     }
+}
+
+function freezeStatic(mesh) {
+    mesh.matrixAutoUpdate = false
+    mesh.updateMatrix()
+    return mesh
+}
+
+function placeInstanced(scene, geo, mat, transforms, roomName, tagRooms = null) {
+    if (!transforms.length) return null
+    const mesh = new THREE.InstancedMesh(geo, mat, transforms.length)
+    mesh.castShadow = false
+    mesh.receiveShadow = false
+    mesh.userData.rooms = [roomName]
+
+    const dummy = new THREE.Object3D()
+    transforms.forEach(({ pos, rotX = 0, rotY = 0, rotZ = 0, scale = 1 }, i) => {
+        dummy.position.set(pos.x, pos.y, pos.z)
+        dummy.rotation.set(rotX, rotY, rotZ)
+        dummy.scale.setScalar(scale)
+        dummy.updateMatrix()
+        mesh.setMatrixAt(i, dummy.matrix)
+    })
+
+    mesh.instanceMatrix.needsUpdate = true
+    mesh.matrixAutoUpdate = false
+    scene.add(mesh)
+    if (tagRooms) tagRooms(mesh, [roomName])
+    return mesh
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -124,7 +151,9 @@ export function generateMap(scene, renderer = null, assetManager = null) {
     const registerCollision = (mesh, roomNames = null, castsShadow = false) => {
         mesh.castShadow    = castsShadow
         mesh.receiveShadow = castsShadow
+        freezeStatic(mesh)
         scene.add(mesh)
+        mesh.updateMatrixWorld(true)
         collisionMeshes.push({ mesh, box: new THREE.Box3().setFromObject(mesh) })
         if (roomNames) tagRooms(mesh, roomNames)
         return mesh
@@ -281,7 +310,9 @@ function _buildWallSegment(scene, collisionMeshes, mats, mat, opts, doors = null
         mesh.name          = name
         mesh.castShadow    = false
         mesh.receiveShadow = false
+        freezeStatic(mesh)
         scene.add(mesh)
+        mesh.updateMatrixWorld(true)
         collisionMeshes.push({ mesh, box: new THREE.Box3().setFromObject(mesh) })
         if (rooms && tagRooms) tagRooms(mesh, rooms)
         return
@@ -303,7 +334,9 @@ function _buildWallSegment(scene, collisionMeshes, mats, mat, opts, doors = null
         mesh.name          = `${name}_seg${side > 0 ? 'R' : 'L'}`
         mesh.castShadow    = false
         mesh.receiveShadow = false
+        freezeStatic(mesh)
         scene.add(mesh)
+        mesh.updateMatrixWorld(true)
         collisionMeshes.push({ mesh, box: new THREE.Box3().setFromObject(mesh) })
         if (rooms && tagRooms) tagRooms(mesh, rooms)
     }
@@ -316,6 +349,7 @@ function _buildWallSegment(scene, collisionMeshes, mats, mat, opts, doors = null
     lintel.position.set(cx, height - 0.15, cz)
     lintel.castShadow = false
     lintel.receiveShadow = false
+    freezeStatic(lintel)
     scene.add(lintel)
     if (rooms && tagRooms) tagRooms(lintel, rooms)
 
@@ -326,8 +360,10 @@ function _buildWallSegment(scene, collisionMeshes, mats, mat, opts, doors = null
             : new THREE.BoxGeometry(thick + 0.02, DOOR_HEIGHT, DOOR_WIDTH - 0.05)
         const doorMesh = new THREE.Mesh(doorGeo, mats.door)
         doorMesh.position.set(cx, DOOR_HEIGHT / 2, cz)
-        doorMesh.castShadow    = true
+        doorMesh.castShadow    = false
         doorMesh.receiveShadow = false
+        freezeStatic(doorMesh)
+        doorMesh.updateMatrixWorld(true)
         const doorCollider = { mesh: doorMesh, box: new THREE.Box3().setFromObject(doorMesh) }
         collisionMeshes.push(doorCollider)
 
@@ -417,13 +453,17 @@ function _placeGLBProps(scene, collisionMeshes, assetManager, doors, lockers, ta
         )
         colMesh.position.set(px, propSize.y / 2, pz)
         colMesh.name = `${clone.name}_col`
+        freezeStatic(colMesh)
         scene.add(colMesh)
+        colMesh.updateMatrixWorld(true)
         collisionMeshes.push({ mesh: colMesh, box: new THREE.Box3().setFromObject(colMesh) })
 
         clone.traverse(child => {
             if (child.isMesh) {
-                child.castShadow    = true
+                child.castShadow    = false
                 child.receiveShadow = false
+                child.matrixAutoUpdate = false
+                child.updateMatrix()
             }
         })
 
@@ -491,14 +531,8 @@ function _buildLocker(scene, collisionMeshes, lockerMat, lockerDoorMat, px, pz, 
     doorPanel.position.set(0, 1.0, -0.285)
     group.add(doorPanel)
 
-    const slatMat = new THREE.MeshStandardMaterial({ color: '#0a0d10', roughness: 0.9 })
-    for (let i = 0; i < 5; i++) {
-        const slat = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.04, 0.01), slatMat)
-        slat.position.set(0, 1.6 - i * 0.12, -0.30)
-        group.add(slat)
-    }
-
     scene.add(group)
+    group.updateMatrixWorld(true)
 
     const colliderBox = new THREE.Box3().setFromObject(body)
     collisionMeshes.push({ mesh: body, box: colliderBox })
@@ -520,7 +554,7 @@ function _addExtractionZone(scene, x, z, tagRooms) {
     const outerMat = new THREE.MeshBasicMaterial({
         color: '#00ff44', side: THREE.DoubleSide, transparent: true, opacity: 0.4, depthWrite: false,
     })
-    const outer = new THREE.Mesh(new THREE.RingGeometry(2.5, 2.8, 32), outerMat)
+    const outer = new THREE.Mesh(new THREE.RingGeometry(2.5, 2.8, 16), outerMat)
     outer.rotation.x = -Math.PI / 2
     outer.position.set(x, 0.02, z)
     scene.add(outer)
@@ -529,17 +563,11 @@ function _addExtractionZone(scene, x, z, tagRooms) {
     const innerMat = new THREE.MeshBasicMaterial({
         color: '#00ff44', side: THREE.DoubleSide, transparent: true, opacity: 0.25, depthWrite: false, wireframe: true,
     })
-    const inner = new THREE.Mesh(new THREE.RingGeometry(1.8, 2.0, 24), innerMat)
+    const inner = new THREE.Mesh(new THREE.RingGeometry(1.8, 2.0, 12), innerMat)
     inner.rotation.x = -Math.PI / 2
     inner.position.set(x, 0.03, z)
     scene.add(inner)
     if (tagRooms) tagRooms(inner, ['Surgical Prep'])
-
-    const gl = new THREE.PointLight('#00ff44', 2.5, 10)
-    gl.position.set(x, 3.5, z)
-    gl.castShadow = false
-    scene.add(gl)
-    if (tagRooms) tagRooms(gl, ['Surgical Prep'])
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -554,29 +582,33 @@ function _addBloodDecals(scene, tagRooms) {
         [-5, -5], [4, 3], [-3, -12], [12, -3], [-12, 4], [3, 12],
         [-12, -5], [5, -12], [-12, -12], [12, -12], [-12, 12], [-2, 12], [12, 2],
     ]
-    spots.forEach(([bx, bz]) => {
-        const geo  = new THREE.CircleGeometry(0.4 + Math.random() * 0.9, 12)
-        const mesh = new THREE.Mesh(geo, mat)
-        mesh.rotation.x = -Math.PI / 2
-        mesh.position.set(bx, 0.02, bz)
-        scene.add(mesh)
-        if (tagRooms) {
-            const r = MAP_BLUEPRINT.find(r =>
-                bx >= r.x - r.w / 2 && bx <= r.x + r.w / 2 &&
-                bz >= r.z - r.h / 2 && bz <= r.z + r.h / 2
-            )
-            if (r) tagRooms(mesh, [r.name])
-        }
+    const geo = new THREE.CircleGeometry(1, 12)
+    const byRoom = new Map()
+    spots.forEach(([bx, bz], i) => {
+        const r = MAP_BLUEPRINT.find(room =>
+            bx >= room.x - room.w / 2 && bx <= room.x + room.w / 2 &&
+            bz >= room.z - room.h / 2 && bz <= room.z + room.h / 2
+        )
+        if (!r) return
+        if (!byRoom.has(r.name)) byRoom.set(r.name, [])
+        byRoom.get(r.name).push({
+            pos: { x: bx, y: 0.02, z: bz },
+            rotX: -Math.PI / 2,
+            rotZ: ((i * 97) % 360) * Math.PI / 180,
+            scale: 0.4 + ((i * 37) % 90) / 100,
+        })
     })
+    for (const [roomName, transforms] of byRoom) {
+        placeInstanced(scene, geo, mat, transforms, roomName, tagRooms)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────
 // HEALTH PICKUPS — glowing green crosses
 // ─────────────────────────────────────────────────────────────────
 function _spawnHealthPickups(scene, healthPickups, doors, tagRooms) {
-    const crossMat = new THREE.MeshStandardMaterial({
-        color: '#00ff66', emissive: '#00ff44', emissiveIntensity: 0.8,
-        roughness: 0.3, metalness: 0.2, transparent: true, opacity: 0.9,
+    const crossMat = new THREE.MeshBasicMaterial({
+        color: '#00ff66', transparent: true, opacity: 0.9,
     })
 
     const farFromDoors = (px, pz) => {
@@ -605,11 +637,6 @@ function _spawnHealthPickups(scene, healthPickups, doors, tagRooms) {
             const hBar = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.12, 0.12), crossMat)
             hBar.position.y = 0.06
             group.add(hBar)
-
-            const glow = new THREE.PointLight('#00ff66', 1.5, 4)
-            glow.position.set(0, 0.2, 0)
-            glow.castShadow = false
-            group.add(glow)
 
             scene.add(group)
             if (tagRooms) tagRooms(group, [room.name])

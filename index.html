@@ -69,11 +69,32 @@
       <button id="m-interact"   class="m-btn">E</button>
       <button id="m-flashlight" class="m-btn hidden">🔦</button>
       <button id="m-phase"      class="m-btn hidden">⚡</button>
+      <button id="m-ptt"        class="m-btn hidden">🎙</button>
     </div>
   </div>
 
   <!-- ======================== LOBBY UI ======================== -->
   <div id="ui-overlay">
+
+    <!-- Device test panel (bottom-left of lobby) -->
+    <div id="lobby-test-panel">
+      <div class="test-panel-title">DEVICE CHECK</div>
+      <div id="test-cam-wrap">
+        <video id="test-cam-video" autoplay muted playsinline></video>
+        <div id="test-bpm-display" class="hidden">BPM: --</div>
+        <div id="test-cam-status">NOT TESTED</div>
+      </div>
+      <div id="test-mic-bar-wrap" class="hidden">
+        <div class="test-label">MIC LEVEL</div>
+        <div id="test-mic-bar"><div id="test-mic-fill"></div></div>
+        <div id="test-mic-status"></div>
+      </div>
+      <div class="test-btns">
+        <button id="btn-test-cam" class="btn-test">📷 CAMERA</button>
+        <button id="btn-test-mic" class="btn-test">🎙 MIC</button>
+      </div>
+    </div>
+
     <div class="lobby-container">
       <h1 class="glitch-title" data-text="BIO-HORROR">BIO-HORROR</h1>
       <p class="subtitle">Multiplayer Horror FPS — Biometric Fear</p>
@@ -119,11 +140,15 @@
       <div id="hud-hp" class="hp-hearts hidden">❤️❤️❤️</div>
     </div>
 
-    <!-- Top right: peer fear (shown to hunter) -->
+    <!-- Top right: peer fear (shown to hunter) + biometrics status + fear source -->
     <div id="hud-topright">
       <div id="hud-peer-fear"></div>
       <div id="bpm-source" class="bpm-source"></div>
+      <div id="fear-source" class="fear-source hidden"></div>
     </div>
+
+    <!-- Mic transmit indicator — lights up when VAD gate is open or V is held -->
+    <div id="mic-indicator" class="hidden" aria-label="Microphone active">🎙</div>
 
     <!-- Bottom right: Fear pulse graph -->
     <div id="fear-panel">
@@ -156,6 +181,19 @@
     <div id="debug-panel" style="display:none">
       <label>BPM Override: <span id="bpm-display">75</span></label>
       <input id="bpm-slider" type="range" min="60" max="180" value="75" />
+    </div>
+  </div>
+
+  <!-- ======================== CONTROLS INTRO (3-second role briefing) ======================== -->
+  <div id="controls-intro" class="hidden">
+    <div id="controls-intro-box">
+      <div id="ci-role"></div>
+      <div id="ci-objective"></div>
+      <div id="ci-body"></div>
+      <div id="ci-footer">
+        <div id="ci-countdown">Starting in <span id="ci-cdown">3</span>…</div>
+        <div id="ci-skip">TAP / CLICK TO SKIP</div>
+      </div>
     </div>
   </div>
 
