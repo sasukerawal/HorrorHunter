@@ -145,7 +145,7 @@ export class Lobby {
 
         let VitalLens
         try {
-            ;({ VitalLens } = await import(/* @vite-ignore */ 'vitallens'))
+            ;({ VitalLens } = await import(/* @vite-ignore */ 'https://cdn.jsdelivr.net/npm/vitallens@0.4.5/dist/vitallens.browser.js'))
         } catch (err) {
             console.warn('[Lobby] VitalLens module unavailable:', err.message)
             if (disp) { disp.textContent = '♥ UNAVAILABLE'; disp.style.color = '#ff003c' }

@@ -15,13 +15,7 @@ export default defineConfig({
       }
     }
   },
-  optimizeDeps: {
-    exclude: ['vitallens'],
-  },
   build: {
-    outDir: 'dist',
-    rollupOptions: {
-      external: ['vitallens'],
-    },
+    outDir: 'dist'
   }
 })
