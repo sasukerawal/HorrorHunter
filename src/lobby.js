@@ -145,7 +145,7 @@ export class Lobby {
 
         let VitalLens
         try {
-            ;({ VitalLens } = await import('vitallens'))
+            ;({ VitalLens } = await import(/* @vite-ignore */ 'vitallens'))
         } catch (err) {
             console.warn('[Lobby] VitalLens module unavailable:', err.message)
             if (disp) { disp.textContent = '♥ UNAVAILABLE'; disp.style.color = '#ff003c' }

@@ -147,7 +147,7 @@ export class Biometrics {
     async _initVitalLens() {
         let VitalLens
         try {
-            ;({ VitalLens } = await import('vitallens'))
+            ;({ VitalLens } = await import(/* @vite-ignore */ 'vitallens'))
         } catch (err) {
             console.warn('[Biometrics] VitalLens module load failed:', err.message)
             this._bpmStatus = 'unavailable'
