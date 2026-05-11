@@ -1,6 +1,46 @@
-// src/biometrics.js — VitalLens rPPG (BPM + RR) + MediaPipe emotion blendshapes
+// src/biometrics.js — VitalLens rPPG (BPM + RR) + Pulsoid HR + MediaPipe emotion blendshapes
 
 const FACE_DETECT_INTERVAL = 0.40
+
+// ── PULSOID ────────────────────────────────────────────────────────────────────
+const PULSOID_HR_URL       = 'https://dev.pulsoid.net/api/v1/data/heart_rate/latest'
+const PULSOID_VALIDATE_URL = 'https://dev.pulsoid.net/api/v1/token/validate'
+const PULSOID_POLL_MS      = 2000   // polling interval when Pulsoid is active
+
+async function _pulsoidRequest(url, token) {
+    const resp = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    })
+    if (!resp.ok) throw Object.assign(new Error(`HTTP ${resp.status}`), { status: resp.status })
+    return resp
+}
+
+async function pulsoidValidateToken(token) {
+    try {
+        const resp = await _pulsoidRequest(PULSOID_VALIDATE_URL, token)
+        const data = await resp.json()
+        const scopes = data.scopes ?? []
+        if (!scopes.includes('data:heart_rate:read'))
+            return { ok: false, reason: 'Token missing data:heart_rate:read scope.' }
+        return { ok: true, data }
+    } catch (err) {
+        return { ok: false, reason: err.message }
+    }
+}
+
+async function pulsoidGetHeartRate(token) {
+    try {
+        const resp = await _pulsoidRequest(
+            PULSOID_HR_URL + '?response_mode=text_plain_only_heart_rate', token,
+        )
+        const text = (await resp.text()).trim()
+        const n = parseInt(text, 10)
+        return Number.isFinite(n) ? n : null
+    } catch (err) {
+        if (err.status === 412) return null  // monitor not broadcasting
+        return null
+    }
+}
 
 const MP_CDN   = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17'
 const MP_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'
@@ -45,6 +85,11 @@ export class Biometrics {
         this._bpmStatus       = 'calibrating'
         this._respiratoryRate = null
         this._vl              = null
+
+        // Pulsoid
+        this._pulsoidToken    = null
+        this._pulsoidActive   = false
+        this._pulsoidTimer    = null
     }
 
     // ── PUBLIC ─────────────────────────────────────────────────────────────────
@@ -128,8 +173,36 @@ export class Biometrics {
     getEmotionFear()     { return this._emotionAvailable ? this._emotionFear    : null }
     getEmotionTension()  { return this._emotionAvailable ? this._emotionTension : null }
     isEmotionAvailable() { return this._emotionAvailable }
+    isPulsoidActive()    { return this._pulsoidActive }
+
+    /** Connect Pulsoid as a heart-rate source. Validates the token first.
+     *  Pulsoid BPM takes priority over VitalLens once connected. */
+    async connectPulsoid(token) {
+        const { ok, reason } = await pulsoidValidateToken(token)
+        if (!ok) {
+            console.warn('[Biometrics] Pulsoid token invalid:', reason)
+            this._setIndicator(`PULSOID: ${reason}`)
+            return false
+        }
+        this._pulsoidToken  = token
+        this._pulsoidActive = true
+        this._bpmStatus     = 'calibrating'
+        this._setIndicator('PULSOID CONNECTED…')
+        console.log('[Biometrics] Pulsoid connected')
+        this._startPulsoidPoll()
+        return true
+    }
+
+    disconnectPulsoid() {
+        this._stopPulsoidPoll()
+        this._pulsoidActive = false
+        this._pulsoidToken  = null
+        this._bpmStatus     = 'calibrating'
+        console.log('[Biometrics] Pulsoid disconnected')
+    }
 
     destroy() {
+        this._stopPulsoidPoll()
         try { this._vl?.stopVideoStream?.() } catch {}
         this._vl = null
         this.stream?.getTracks().forEach(t => t.stop())
@@ -385,6 +458,31 @@ export class Biometrics {
         }
     }
 
+    // ── PRIVATE — PULSOID POLL ────────────────────────────────────────────────
+
+    _startPulsoidPoll() {
+        this._stopPulsoidPoll()
+        const poll = async () => {
+            if (!this._pulsoidActive || !this._pulsoidToken) return
+            const bpm = await pulsoidGetHeartRate(this._pulsoidToken)
+            if (bpm != null) {
+                this.currentBPM = bpm
+                this.confidence  = 1
+                this._bpmStatus  = 'stable'
+                this._setIndicator(this._statusText())
+            }
+            this._pulsoidTimer = setTimeout(poll, PULSOID_POLL_MS)
+        }
+        poll()
+    }
+
+    _stopPulsoidPoll() {
+        if (this._pulsoidTimer != null) {
+            clearTimeout(this._pulsoidTimer)
+            this._pulsoidTimer = null
+        }
+    }
+
     // ── PRIVATE — HUD ─────────────────────────────────────────────────────────
 
     _statusText() {
@@ -398,6 +496,8 @@ export class Biometrics {
             : ''
         if (!this.currentBPM) return `VL CALIBRATING…${emoStr}`
         const tag = this._bpmStatus === 'stable' ? 'OK' : 'CAL'
+        if (this._pulsoidActive)
+            return `PULSE ${this.currentBPM} BPM [PULSOID][${tag}]${emoStr}`
         return `PULSE ${this.currentBPM} BPM [VL ${Math.round(this.confidence * 100)}%][${tag}]${rrStr}${emoStr}`
     }
 
