@@ -344,12 +344,12 @@ export class Engine {
 
         this._updateFlashlight(fearLevel, bpm, dt)
 
-        // Room lights flicker at a fixed low rate; invisible rooms do not pay update cost.
+        // Room lights flicker at a fixed low rate; occluded rooms do not pay update cost.
         this._lightFlickerTimer += dt
         if (this.mapData?.roomLights && this._lightFlickerTimer >= 0.10) {
             this._lightFlickerTimer = 0
             for (const { light } of this.mapData.roomLights) {
-                if (!light.visible) continue
+                if (light.userData.occluded) continue
                 const fs    = light.userData.flickerStrength ?? 0.5
                 const baseI = light.userData.baseIntensity ?? 5
                 const mult  = light.userData.flickerMultiplier ?? 1.0
@@ -648,6 +648,19 @@ export class Engine {
         for (const obj of this._allRoomObjects) obj.visible = visible
     }
 
+    /** Room lights stay `visible` so the renderer's light count never changes
+     *  (changing it forces a shader recompile → hitch on room transitions).
+     *  Occluded rooms just have their light dimmed to zero instead. */
+    _setRoomLightOcclusion(visibleRooms) {
+        if (!this.mapData?.roomLights) return
+        for (const { light, name } of this.mapData.roomLights) {
+            const occluded = visibleRooms ? !visibleRooms.has(name) : false
+            light.userData.occluded = occluded
+            if (occluded) light.intensity = 0
+            // un-occluded lights get intensity back on the next flicker tick (≤0.1 s)
+        }
+    }
+
     updateOcclusion(playerPos, currentRoom = null) {
         if (!this.rooms.length) return
         const here = currentRoom ?? this.findRoomContaining(playerPos)
@@ -657,6 +670,7 @@ export class Engine {
                 this._visibleRooms.clear()
                 this._occlusionInitialized = false
                 this._setAllRoomObjectsVisible(true)
+                this._setRoomLightOcclusion(null)
             }
             return
         }
@@ -670,6 +684,7 @@ export class Engine {
         for (const conn of conns) {
             if (conn.door.isOpen) nextVisibleRooms.add(conn.neighbor)
         }
+        this._setRoomLightOcclusion(nextVisibleRooms)
 
         if (!this._occlusionInitialized) {
             for (const obj of this._allRoomObjects) {

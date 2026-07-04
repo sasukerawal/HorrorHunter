@@ -183,9 +183,10 @@ export class VolumetricFlashlight {
 
     toggle(isOn) {
         this._isOn = !!isOn
-        this.light.visible = this._isOn
-        this.fill.visible  = this._isOn
-        this.cone.visible  = this._isOn
+        // Lights stay `visible` so the renderer's light count never changes
+        // (avoids a shader recompile hitch on every flashlight toggle).
+        // Engine zeroes their intensity each frame while the flashlight is off.
+        this.cone.visible = this._isOn
     }
 
     isOn()               { return this._isOn }

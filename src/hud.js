@@ -39,6 +39,15 @@ export class HUD {
         // Net gun bloom (sized by Prey fear, set by main.js)
         this.crosshairBloom = 0
 
+        // Change-guards — skip DOM writes when the displayed value hasn't changed
+        this._lastTimerStamp     = -1
+        this._lastBpmShown       = null
+        this._lastDebugBpm       = null
+        this._lastFlashState     = null
+        this._lastVignetteKey    = null
+        this._lastCrosshairBloom = null
+        this._lastFearSource     = null
+
         this._setupDebugSlider()
     }
 
@@ -81,8 +90,10 @@ export class HUD {
         }
     }
 
-    /** Bloom drives crosshair size + a CSS scale. Higher fear → larger circle. */
+    /** Bloom drives crosshair size + a CSS scale. */
     setCrosshairBloom(bloom) {
+        if (bloom === this._lastCrosshairBloom) return
+        this._lastCrosshairBloom = bloom
         this.crosshairBloom = bloom
         if (!this.crosshair || this.role !== 'hunter') return
         const scale = 1 + Math.min(4, bloom * 18)
@@ -106,6 +117,12 @@ export class HUD {
         const panic = Math.max(0, Math.min(1, (clampedBpm - 85) / 60))
         const radioBleed = role === 'hunter' ? Math.max(0, Math.min(1, peerFear)) * 0.35 : 0
         const amount = role === 'prey' ? panic : radioBleed
+
+        // All CSS vars derive from `amount` — skip the style writes if it hasn't moved
+        const key = Math.round(amount * 100)
+        if (key === this._lastVignetteKey) return
+        this._lastVignetteKey = key
+
         const clear = 42 - amount * 24
         const opacity = 0.50 + amount * 0.43
         const blood = amount * 0.34
@@ -136,7 +153,8 @@ export class HUD {
      * Called once per second after biometrics.triggerEstimate().
      */
     setFearSource(source) {
-        if (!this.fearSourceEl) return
+        if (!this.fearSourceEl || source === this._lastFearSource) return
+        this._lastFearSource = source
         const COLORS = { BPM: '#00ffcc', Face: '#ff9900', Voice: '#ffff00', Proximity: '#888888' }
         this.fearSourceEl.textContent = `FEAR ← ${source.toUpperCase()}`
         this.fearSourceEl.style.color = COLORS[source] ?? '#888888'
@@ -160,7 +178,8 @@ export class HUD {
     }
 
     setFlashlightStatus(on) {
-        if (!this.flashlightEl) return
+        if (!this.flashlightEl || on === this._lastFlashState) return
+        this._lastFlashState = on
         this.flashlightEl.textContent = on ? '🔦 FLASHLIGHT ON' : '🔦 FLASHLIGHT OFF'
         this.flashlightEl.classList.toggle('off', !on)
     }
@@ -229,19 +248,25 @@ export class HUD {
     update(dt, fearLevel, bpm) {
         if (!this.running) return
 
-        // Timer countdown
+        // Timer countdown — only touch the DOM when the displayed second changes
         this.timeLeft -= dt
         if (this.timeLeft < 0) this.timeLeft = 0
         const minutes = Math.floor(this.timeLeft / 60)
         const seconds = Math.floor(this.timeLeft % 60)
-        if (this.timerEl) {
+        const stamp   = minutes * 60 + seconds
+        if (this.timerEl && stamp !== this._lastTimerStamp) {
+            this._lastTimerStamp = stamp
             this.timerEl.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`
             if (this.timeLeft < 30) this.timerEl.style.color = '#ff0000'
         }
 
-        // BPM display
-        if (this.bpmEl) this.bpmEl.textContent = `♥ ${bpm} BPM`
-        if (this.debugBpmDisplay && this.debugSlider) {
+        // BPM display — same guard
+        if (this.bpmEl && bpm !== this._lastBpmShown) {
+            this._lastBpmShown = bpm
+            this.bpmEl.textContent = `♥ ${bpm} BPM`
+        }
+        if (this.debugBpmDisplay && this.debugSlider && this.debugSlider.value !== this._lastDebugBpm) {
+            this._lastDebugBpm = this.debugSlider.value
             this.debugBpmDisplay.textContent = this.debugSlider.value
         }
 
@@ -282,7 +307,8 @@ export class HUD {
         gradient.addColorStop(0.5, `rgb(${r},${g},50)`)
         gradient.addColorStop(1, `rgba(${r},${g},50,0.3)`)
         ctx.strokeStyle = gradient
-        ctx.shadowBlur = fearLevel * 12
+        // shadowBlur is the most expensive canvas op — only pay for it at real fear
+        ctx.shadowBlur = fearLevel > 0.25 ? fearLevel * 12 : 0
         ctx.shadowColor = `rgb(${r},${g},0)`
 
         const step = w / this.fearHistory.length

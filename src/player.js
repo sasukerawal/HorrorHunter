@@ -98,6 +98,7 @@ export class Player {
         this._gpMove           = new THREE.Vector2()
         this._gpLook           = new THREE.Vector2()
         this._gpPrevButtons    = []
+        this._gpCurrButtons    = []   // double-buffered with prev — no per-frame allocation
         this._gpConnected      = false
         // Readable by main.js; cleared after read
         this.gpInteractJustPressed = false
@@ -108,6 +109,7 @@ export class Player {
         this.peerMesh = null
         this.peerIsPhasing = false
         this.peerIsHiding  = false
+        this._peerLastOpacity = 1.0   // skip material traversal unless phase state changes
         this.peerRole      = null   // 'hunter' | 'prey' — set by main.js after role assignment
         this.peerFlashlightOn = true
 
@@ -149,7 +151,9 @@ export class Player {
         this._gpMove.set(ax(gp.axes[0] ?? 0), ax(gp.axes[1] ?? 0))
         this._gpLook.set(ax(gp.axes[2] ?? 0), ax(gp.axes[3] ?? 0))
 
-        const curr = Array.from(gp.buttons, b => b.pressed)
+        const curr = this._gpCurrButtons
+        curr.length = gp.buttons.length
+        for (let i = 0; i < gp.buttons.length; i++) curr[i] = gp.buttons[i].pressed
         const prev = this._gpPrevButtons
         const rose = i => curr[i] && !prev[i]
 
@@ -159,6 +163,8 @@ export class Player {
         if (rose(3)) this.gpFlashJustPressed    = true   // Y = flashlight
         if (rose(2) && this.role === 'prey') this.tryPhase(this.lastFear)  // X = phase
 
+        // Swap buffers instead of allocating a new array every frame
+        this._gpCurrButtons = prev
         this._gpPrevButtons = curr
     }
 
@@ -233,6 +239,7 @@ export class Player {
     _buildPeerModel() {
         // Remove old mesh children
         while (this.peerMesh.children.length) this.peerMesh.remove(this.peerMesh.children[0])
+        this._peerLastOpacity = 1.0   // fresh materials start fully opaque
 
         const peerIsPrey = this.role === 'hunter'  // our peer is the opposite role
 
@@ -782,14 +789,18 @@ export class Player {
         this.peerPosition.set(data.x, data.y, data.z)
         this.peerMesh.position.copy(this.peerPosition)
 
-        // Phase translucency — traverse all children since peerMesh is a Group
+        // Phase translucency — traversing every child at 30 Hz is wasteful,
+        // so only touch materials when the phase state actually flips.
         const op = this.peerIsPhasing ? 0.3 : 1.0
-        this.peerMesh.traverse((child) => {
-            if (child.material) {
-                child.material.opacity = op
-                child.material.transparent = op < 1
-            }
-        })
+        if (op !== this._peerLastOpacity) {
+            this._peerLastOpacity = op
+            this.peerMesh.traverse((child) => {
+                if (child.material) {
+                    child.material.opacity = op
+                    child.material.transparent = op < 1
+                }
+            })
+        }
 
         if (data.ry !== undefined) this.peerMesh.rotation.y = data.ry
         if (this.peerHead && data.rx !== undefined) {

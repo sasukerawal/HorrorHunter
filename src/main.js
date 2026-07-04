@@ -28,9 +28,16 @@ let viewmodel = null
 let fearSystem = null
 let role = 'prey'
 let peers = []         // { id, role } from server
+const peerPositions = new Map()   // socketId → latest peerMove payload (for per-peer voice)
 let gameRunning = false
 let elapsed = 0
 let extractionEmergencyTriggered = false
+
+// Cached DOM references — never re-query these in the game loop
+const gameCanvasEl     = document.getElementById('game-canvas')
+const interactPromptEl = document.getElementById('interact-prompt')
+const extractHudEl     = document.getElementById('extraction-hud')
+const extractFillEl    = document.getElementById('extraction-fill')
 
 const CATCH_DISTANCE = 1.8
 const CATCH_FOV = 0.7
@@ -92,8 +99,7 @@ lobby.onGameStart = async (assignedRole, assignedPeers) => {
     await assetManager.loadAll()
     if (loadingPct) loadingPct.textContent = '50%'
 
-    const canvas = document.getElementById('game-canvas')
-    engine.init(canvas, assetManager)
+    engine.init(gameCanvasEl, assetManager)
     if (loadingPct) loadingPct.textContent = '80%'
 
     engine.onLoadComplete = () => {
@@ -122,14 +128,12 @@ lobby.onGameStart = async (assignedRole, assignedPeers) => {
 
         // Phase / hide hooks → visuals
         player.onPhaseStart = () => {
-            const cv = document.getElementById('game-canvas')
-            if (cv) cv.classList.add('phase-active')
+            if (gameCanvasEl) gameCanvasEl.classList.add('phase-active')
             if (viewmodel) viewmodel.setOpacity(0.3)
             audio.playFootstep(0.6)
         }
         player.onPhaseEnd = () => {
-            const cv = document.getElementById('game-canvas')
-            if (cv) cv.classList.remove('phase-active')
+            if (gameCanvasEl) gameCanvasEl.classList.remove('phase-active')
             if (viewmodel) viewmodel.setOpacity(1.0)
         }
         player.onPhaseDenied = (reason) => {
@@ -154,6 +158,7 @@ lobby.onGameStart = async (assignedRole, assignedPeers) => {
 
 // ─── SOCKET EVENTS ───
 socket.on('peerMove', (data) => {
+    if (data.id !== undefined) peerPositions.set(data.id, data)
     if (player) player.updatePeer(data)
     if (netGun && data.isPhasing !== undefined) netGun.setPeerPhasing(!!data.isPhasing)
 })
@@ -243,19 +248,21 @@ socket.on('gameOver', ({ winner }) => {
 
 socket.on('peerDisconnected', ({ id }) => {
     console.log(`[GAME] Peer ${id} disconnected`)
+    peerPositions.delete(id)
     // In multi-player, the game continues if other players remain
 })
 
 let fearSyncTimer = 0
 let catchCheckTimer = 0
 let moveEmitTimer = 0
-const systemTimers = { voice: 0, bpm: 0 }
+const systemTimers = { voice: 0, bpm: 0, prompt: 0 }
 let cachedPeerLineOfSight = true
 const losFrom = new THREE.Vector3()
 const losTo   = new THREE.Vector3()
 const losDir  = new THREE.Vector3()
 const _spatialFwd = new THREE.Vector3()
 const _spatialUp  = new THREE.Vector3()
+const _voicePeers = new Map()   // rebuilt at 10 Hz: peerId → { distance, lineOfSight, position }
 
 function checkHunterCatch() {
     if (role !== 'hunter' || !player) return
@@ -335,7 +342,7 @@ function showControlsIntro(assignedRole) {
                 ['V (hold)',           'Voice Chat'],
             ],
             abilities: [
-                ['🎯 NET GUN [CLICK]',     'Fire nets to catch prey — their fear widens the aim cone'],
+                ['🎯 NET GUN [CLICK]',     'Fire nets to catch prey — 3 hits takes one down'],
                 ['🔦 FLASHLIGHT [F / Y]',  'Illuminate prey — spikes BPM and fear level'],
                 ['👁 BIOMETRIC FEED',       'Real-time prey fear % shown on your HUD top-right'],
             ],
@@ -554,10 +561,7 @@ function gameLoop() {
 
     if (player) {
         player.update(dt, role === 'prey' ? mods : {}, localFear)
-        if (netGun) {
-            netGun.setAccuracy(mods.netAccuracy ?? 1)
-            netGun.update(dt)
-        }
+        if (netGun) netGun.update(dt)
         moveEmitTimer += dt
         if (moveEmitTimer >= 0.033) {   // 30 hz — halves serialization + network overhead vs every frame
             moveEmitTimer = 0
@@ -609,19 +613,32 @@ function gameLoop() {
             const hit = engine.raycastCollision({ origin: losFrom, direction: losDir })
             if (hit && hit.distance < peerDist) cachedPeerLineOfSight = false
         }
-        voice.update(voiceDt, peerDist, cachedPeerLineOfSight)
+
+        // Per-peer distance + LOS so EVERY player's voice attenuates from their
+        // own position — not from whichever peer happened to move last.
+        _voicePeers.clear()
+        if (player) {
+            for (const [pid, pp] of peerPositions) {
+                losTo.set(pp.x, pp.y, pp.z)
+                const d = player.position.distanceTo(losTo)
+                let los = true
+                if (d < 15) {
+                    losFrom.copy(player.position)
+                    losDir.subVectors(losTo, losFrom).normalize()
+                    const hit = engine.raycastCollision({ origin: losFrom, direction: losDir })
+                    if (hit && hit.distance < d) los = false
+                }
+                _voicePeers.set(pid, { distance: d, lineOfSight: los, position: pp })
+            }
+        }
+        voice.update(voiceDt, _voicePeers)
         voice.applyFearDistortion(role === 'prey' ? localFear : peerFear)
 
-        // HRTF 3D spatial audio — update listener pose + peer speaker position
+        // HRTF 3D spatial audio — listener pose + per-peer speaker positions
         if (player && engine.camera) {
             engine.camera.getWorldDirection(_spatialFwd)
             _spatialUp.copy(engine.camera.up)
-            voice.updateSpatialAudio(
-                player.position,
-                _spatialFwd,
-                _spatialUp,
-                player.peerPosition ?? null
-            )
+            voice.updateSpatialAudio(player.position, _spatialFwd, _spatialUp, _voicePeers)
         }
         hud.setMicTransmit(voice.isTransmitting())
     }
@@ -640,11 +657,10 @@ function gameLoop() {
     hud.update(dt, localFear, localBPM)
 
     // Fear glitch overlays
-    const canvas = document.getElementById('game-canvas')
-    if (canvas) {
-        canvas.classList.toggle('fear-state', localFear > 0.7)
-        canvas.classList.toggle('fear-glitch', localFear > 0.8)
-        canvas.classList.toggle('high-panic', localFear > 0.8)
+    if (gameCanvasEl) {
+        gameCanvasEl.classList.toggle('fear-state', localFear > 0.7)
+        gameCanvasEl.classList.toggle('fear-glitch', localFear > 0.8)
+        gameCanvasEl.classList.toggle('high-panic', localFear > 0.8)
     }
 
     // Vignette: Prey gets BPM tunnel vision; Hunter gets weaker peer-fear radio bleed.
@@ -698,17 +714,18 @@ function gameLoop() {
         }
     }
 
-    // Door / Hide proximity prompts
-    const prompt = document.getElementById('interact-prompt')
-    if (prompt && player) {
-        let nearDoor = false
-        engine.doors.forEach(door => {
-            door.mesh.getWorldPosition(doorPromptPos)
-            if (player.position.distanceTo(doorPromptPos) < 3) nearDoor = true
-        })
-        prompt.classList.toggle('visible', nearDoor && !player.isHiding)
-    }
-    if (player) {
+    // Door / Hide proximity prompts — throttled to ~8 Hz (pure UI, no need per-frame)
+    systemTimers.prompt += dt
+    if (systemTimers.prompt >= 0.12 && player) {
+        systemTimers.prompt = 0
+        if (interactPromptEl) {
+            let nearDoor = false
+            for (const door of engine.doors) {
+                door.mesh.getWorldPosition(doorPromptPos)
+                if (player.position.distanceTo(doorPromptPos) < 3) { nearDoor = true; break }
+            }
+            interactPromptEl.classList.toggle('visible', nearDoor && !player.isHiding)
+        }
         const nearLocker = engine.findNearestLocker(player.position) !== null
         hud.setHideHint(nearLocker || player.isHiding, player.isHiding)
     }
@@ -719,9 +736,6 @@ function gameLoop() {
         engine.activateExtractionEmergency()
     }
 
-    const extractHud  = document.getElementById('extraction-hud')
-    const extractFill = document.getElementById('extraction-fill')
-
     if (role === 'prey' && player && hud.timeLeft <= 0) {
         const dir = engine.getExtractionDirection(player.position)
         hud.setExtractionArrow(true, dir, player.euler.y)
@@ -729,9 +743,9 @@ function gameLoop() {
         const inZone = engine.isInExtractionZone(player.position)
         if (inZone) {
             extractionTimer += dt
-            if (extractHud) {
-                extractHud.classList.remove('hidden')
-                if (extractFill) extractFill.style.width = `${Math.min(100, (extractionTimer / EXTRACTION_REQUIRED) * 100)}%`
+            if (extractHudEl) {
+                extractHudEl.classList.remove('hidden')
+                if (extractFillEl) extractFillEl.style.width = `${Math.min(100, (extractionTimer / EXTRACTION_REQUIRED) * 100)}%`
             }
             if (extractionTimer >= EXTRACTION_REQUIRED) {
                 gameRunning = false
@@ -741,7 +755,7 @@ function gameLoop() {
             }
         } else {
             extractionTimer = Math.max(0, extractionTimer - dt * 2)
-            if (extractHud) extractHud.classList.add('hidden')
+            if (extractHudEl) extractHudEl.classList.add('hidden')
         }
     } else {
         hud.setExtractionArrow(false)

@@ -248,7 +248,9 @@ export function generateMap(scene, renderer = null, assetManager = null) {
         roomLight.userData.flickerMultiplier = 1.0
         roomLight.userData.flickerStrength   = isHorrorRoom ? 0.9 : 0.5
         scene.add(roomLight)
-        tagRooms(roomLight, [name])
+        // NOT tagged for occlusion visibility — toggling light.visible changes the
+        // renderer's light count and forces shader recompiles (hitch on every room
+        // change). Engine dims occluded room lights to intensity 0 instead.
         roomLights.push({ light: roomLight, name })
     })
 

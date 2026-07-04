@@ -16,11 +16,9 @@ export class NetGun {
         this._raycaster = new THREE.Raycaster()
         this._raycastTargets = []
 
-        // Bloom (driven by Prey's broadcast fear; expands the hitscan jitter cone)
-        // Bloom = baseBloom + (fear * maxJitter) — applied as random offset to the ray direction
+        // Fixed spread — aim is never degraded by fear or heart rate
         this.baseBloom  = 0.005
-        this.maxJitter  = 0.18
-        this.peerFear   = 0
+        this.peerFear   = 0          // tracked for HUD display only
         this.peerIsPhasing = false   // when prey is phasing, raycast cannot tag them
 
         this._setupInput()
@@ -45,17 +43,15 @@ export class NetGun {
     setAccuracy(accuracy) { this.accuracy = accuracy }
     setPeerFear(f)         { this.peerFear = Math.max(0, Math.min(1, f)) }
     setPeerPhasing(p)      { this.peerIsPhasing = !!p }
-    /** Bloom = baseBloom + (fear * maxJitter) — used by HUD to size the crosshair, and by _fire for raycast spread */
-    getBloom()             { return this.baseBloom + this.peerFear * this.maxJitter }
+    /** Fixed bloom — crosshair and spread stay constant regardless of fear/BPM */
+    getBloom()             { return this.baseBloom }
     /** Called from mobile tap-to-shoot and gamepad trigger */
     tryFireFromMobile()    { this._fire() }
 
     _fire() {
         if (this.cooldown > 0) return
 
-        // Bloom = baseBloom + (fear * maxJitter), plus a small accuracy-based residual
-        const bloom  = this.getBloom()
-        const spread = bloom + (1 - this.accuracy) * 0.04
+        const spread = this.baseBloom
         const origin = new THREE.Vector3()
         this.camera.getWorldPosition(origin)
 

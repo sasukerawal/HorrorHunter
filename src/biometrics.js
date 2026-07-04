@@ -85,6 +85,10 @@ export class Biometrics {
         this._bpmStatus       = 'calibrating'
         this._respiratoryRate = null
         this._vl              = null
+        this._VitalLensCtor   = null
+        this._vlMethod        = null
+        this._vitalsSeen      = false
+        this._vlWatchdog      = null
 
         // Pulsoid
         this._pulsoidToken    = null
@@ -203,7 +207,10 @@ export class Biometrics {
 
     destroy() {
         this._stopPulsoidPoll()
+        clearTimeout(this._vlWatchdog)
+        this._vlWatchdog = null
         try { this._vl?.stopVideoStream?.() } catch {}
+        try { this._vl?.close?.() } catch {}
         this._vl = null
         this.stream?.getTracks().forEach(t => t.stop())
         try { this._faceLandmarker?.close() } catch {}
@@ -227,36 +234,47 @@ export class Biometrics {
             this._setIndicator('VITALLENS UNAVAILABLE')
             return
         }
+        this._VitalLensCtor = VitalLens
 
-        // Try cloud API first, fall back to local rPPG
-        const configs = [
-            { method: 'vitallens', apiKey: VL_API_KEY },
-            { method: 'pos' },
-        ]
-        for (const cfg of configs) {
-            try {
-                const vl = new VitalLens(cfg)
-                vl.addVideoStream(this.stream, this.videoEl)
-                vl.startVideoStream()
-                this._vl = vl
-                console.log(`[Biometrics] VitalLens started (${cfg.method})`)
-                break
-            } catch (err) {
-                console.warn(`[Biometrics] VitalLens ${cfg.method} failed:`, err.message)
-            }
-        }
-
-        if (!this._vl) {
+        // Cloud API first; a watchdog falls back to local rPPG if no vitals arrive.
+        const started = await this._startVL({ method: 'vitallens', apiKey: VL_API_KEY })
+            || await this._startVL({ method: 'pos' })
+        if (!started) {
             this._bpmStatus = 'unavailable'
             this._setIndicator('VITALLENS UNAVAILABLE')
-            return
         }
+    }
 
-        this._vl.addEventListener('vitals', (result) => {
-            const hr = result.vital_signs?.heart_rate ?? result.vitals?.heart_rate
-            const rr = result.vital_signs?.respiratory_rate ?? result.vitals?.respiratory_rate
+    /** Create + wire one VitalLens instance. Returns true when streaming started. */
+    async _startVL(cfg) {
+        if (!this._VitalLensCtor) return false
+        try {
+            const vl = new this._VitalLensCtor(cfg)
+            // setVideoStream is the documented API (async) — addVideoStream does not exist
+            await vl.setVideoStream(this.stream, this.videoEl)
+            vl.startVideoStream()
+            this._vl        = vl
+            this._vlMethod  = cfg.method
+            this._vitalsSeen = false
+            this._attachVLEvents(vl)
+            this._armVLWatchdog()
+            console.log(`[Biometrics] VitalLens started (${cfg.method})`)
+            return true
+        } catch (err) {
+            console.warn(`[Biometrics] VitalLens ${cfg.method} failed:`, err.message)
+            return false
+        }
+    }
 
-            if (hr?.value != null) {
+    _attachVLEvents(vl) {
+        vl.addEventListener('vitals', (result) => {
+            if (vl !== this._vl) return   // stale instance after a fallback swap
+            this._vitalsSeen = true
+            const hr = result?.vitals?.heart_rate ?? result?.vital_signs?.heart_rate
+            const rr = result?.vitals?.respiratory_rate ?? result?.vital_signs?.respiratory_rate
+
+            // Pulsoid takes priority for BPM once connected
+            if (hr?.value != null && !this._pulsoidActive) {
                 this.currentBPM = Math.round(hr.value)
                 this.confidence  = typeof hr.confidence === 'number' ? hr.confidence : 0
                 this._bpmStatus  = this.confidence >= 0.35 ? 'stable' : 'calibrating'
@@ -267,12 +285,32 @@ export class Biometrics {
             this._setIndicator(this._statusText())
         })
 
-        this._vl.addEventListener('streamReset', () => {
+        vl.addEventListener('streamReset', () => {
+            if (vl !== this._vl) return
             console.warn('[Biometrics] VitalLens stream reset — waiting for reconnect')
             this.confidence = 0
             this._bpmStatus = 'calibrating'
             this._setIndicator('VITALLENS RECONNECTING…')
         })
+    }
+
+    /** The cloud method can fail silently (bad key / quota exhausted) —
+     *  if no vitals arrive within 25 s, switch to the local rPPG algorithm. */
+    _armVLWatchdog() {
+        clearTimeout(this._vlWatchdog)
+        if (this._vlMethod !== 'vitallens') return
+        this._vlWatchdog = setTimeout(async () => {
+            if (this._vitalsSeen || this._vlMethod !== 'vitallens') return
+            console.warn('[Biometrics] No vitals from cloud API — falling back to local rPPG (pos)')
+            try { this._vl?.stopVideoStream?.() } catch {}
+            try { await this._vl?.close?.() } catch {}
+            this._vl = null
+            const ok = await this._startVL({ method: 'pos' })
+            if (!ok) {
+                this._bpmStatus = 'unavailable'
+                this._setIndicator('VITALLENS UNAVAILABLE')
+            }
+        }, 25000)
     }
 
     // ── PRIVATE — MEDIAPIPE INIT ───────────────────────────────────────────────

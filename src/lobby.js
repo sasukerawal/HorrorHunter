@@ -159,7 +159,8 @@ export class Lobby {
         for (const cfg of configs) {
             try {
                 const vl = new VitalLens(cfg)
-                vl.addVideoStream(this._testCamStream, videoEl)
+                // setVideoStream is the documented API (async) — addVideoStream does not exist
+                await vl.setVideoStream(this._testCamStream, videoEl)
                 vl.startVideoStream()
                 this._vlLobby = vl
                 console.log(`[Lobby] VitalLens started (${cfg.method})`)
@@ -175,7 +176,7 @@ export class Lobby {
         }
 
         this._vlLobby.addEventListener('vitals', (result) => {
-            const hr = result.vital_signs?.heart_rate ?? result.vitals?.heart_rate
+            const hr = result?.vitals?.heart_rate ?? result?.vital_signs?.heart_rate
             if (!hr?.value || !disp) return
             const bpm = Math.round(hr.value)
             disp.textContent = `♥ ${bpm} BPM`
@@ -188,6 +189,7 @@ export class Lobby {
 
     _stopBPMSampler() {
         try { this._vlLobby?.stopVideoStream?.() } catch {}
+        try { this._vlLobby?.close?.() } catch {}
         this._vlLobby = null
         const disp = document.getElementById('test-bpm-display')
         if (disp) { disp.classList.add('hidden'); disp.textContent = 'BPM: --' }

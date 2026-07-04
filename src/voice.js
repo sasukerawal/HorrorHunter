@@ -40,6 +40,7 @@ export class VoiceChat {
         this._breathWindow  = []
         this._fearDistortionLevel = 0
         this._micAttempted  = false
+        this._lastCurveFear = null         // last fear level baked into the distortion curve
         this._queuedOffers  = []           // offers that arrived before mic was ready
         this._queuedIce     = new Map()    // peerId → RTCIceCandidate[]
         this._reconnectTimers = new Map()  // peerId → setTimeout handle
@@ -87,8 +88,14 @@ export class VoiceChat {
         }
     }
 
-    update(dt, peerDistance = Infinity, isLineOfSight = true) {
-        this._updateRemoteVolumes(peerDistance, isLineOfSight)
+    /**
+     * @param {number} dt
+     * @param {Map<string,{distance:number,lineOfSight:boolean,position?:{x,y,z}}>|null} peers
+     *        Per-peer proximity info keyed by socket id. Peers without an entry
+     *        (no position received yet) stay audible at a default mid volume.
+     */
+    update(dt, peers = null) {
+        this._updateRemoteVolumes(peers)
         this._updateMicLevel(dt)
     }
 
@@ -361,18 +368,21 @@ export class VoiceChat {
         this.remoteGraphs.set(peerId, { source, panner, filter, distortion, gain })
     }
 
-    _updateRemoteVolumes(peerDistance, isLineOfSight) {
+    _updateRemoteVolumes(peers) {
         if (!this.remoteGraphs.size) return
-        const dist   = Number.isFinite(peerDistance) ? peerDistance : Infinity
-        const base   = Math.max(0, Math.min(1, 1 - dist / VOICE_RANGE))
-        const muffle = isLineOfSight ? 1 : 0.45
-        const volume = Math.pow(base, 1.35) * muffle
+        const ctx = this._getAudioContext()
+        if (!ctx) return
         const fear = this._fearDistortionLevel
         const fearFreq = fear > 0.7 ? 1200 : fear > 0.4 ? 3500 : 7000
-        const freq   = Math.min(isLineOfSight ? 7000 : 750, fearFreq)
-        const ctx    = this._getAudioContext()
-        if (!ctx) return
-        for (const graph of this.remoteGraphs.values()) {
+        // Each connected peer gets volume/muffle from THEIR OWN distance & LOS —
+        // every player hears every other player correctly regardless of role.
+        for (const [peerId, graph] of this.remoteGraphs) {
+            const info = peers?.get?.(peerId)
+            const dist = info && Number.isFinite(info.distance) ? info.distance : 6
+            const los  = info ? info.lineOfSight !== false : true
+            const base   = Math.max(0, Math.min(1, 1 - dist / VOICE_RANGE))
+            const volume = Math.pow(base, 1.35) * (los ? 1 : 0.45)
+            const freq   = Math.min(los ? 7000 : 750, fearFreq)
             graph.gain.gain.setTargetAtTime(volume, ctx.currentTime, 0.08)
             graph.filter.frequency.setTargetAtTime(freq, ctx.currentTime, 0.08)
         }
@@ -457,14 +467,13 @@ export class VoiceChat {
     pttHeld(held) { this._pttHeld = !!held }
 
     /**
-     * Update HRTF listener pose and peer speaker position for 3D directional audio.
-     * Call every frame with camera world data from Three.js.
+     * Update HRTF listener pose and per-peer speaker positions for 3D directional audio.
      * @param {{x,y,z}} listenerPos  — camera/player world position
      * @param {{x,y,z}} listenerFwd  — camera forward unit vector
      * @param {{x,y,z}} listenerUp   — camera up unit vector
-     * @param {{x,y,z}|null} speakerPos — peer world position (null = keep previous)
+     * @param {Map<string,{position?:{x,y,z}}>|null} peers — per-peer info keyed by socket id
      */
-    updateSpatialAudio(listenerPos, listenerFwd, listenerUp, speakerPos) {
+    updateSpatialAudio(listenerPos, listenerFwd, listenerUp, peers = null) {
         const ctx = this._getAudioContext()
         if (!ctx || !listenerPos || !listenerFwd) return
 
@@ -487,23 +496,27 @@ export class VoiceChat {
             } catch {}
         }
 
-        if (!speakerPos) return
-        for (const graph of this.remoteGraphs.values()) {
-            if (!graph.panner) continue
+        if (!peers) return
+        for (const [peerId, graph] of this.remoteGraphs) {
+            const pos = peers.get?.(peerId)?.position
+            if (!pos || !graph.panner) continue
             if (graph.panner.positionX) {
-                graph.panner.positionX.value = speakerPos.x
-                graph.panner.positionY.value = speakerPos.y
-                graph.panner.positionZ.value = speakerPos.z
+                graph.panner.positionX.value = pos.x
+                graph.panner.positionY.value = pos.y
+                graph.panner.positionZ.value = pos.z
             } else {
-                try { graph.panner.setPosition(speakerPos.x, speakerPos.y, speakerPos.z) } catch {}
+                try { graph.panner.setPosition(pos.x, pos.y, pos.z) } catch {}
             }
         }
     }
 
     applyFearDistortion(fearLevel = 0) {
-        if (!this.remoteGraphs.size) return
         const fear = Math.max(0, Math.min(1, fearLevel))
         this._fearDistortionLevel = fear
+        if (!this.remoteGraphs.size) return
+        // Rebuilding the WaveShaper curve allocates — only when fear moves meaningfully
+        if (this._lastCurveFear !== null && Math.abs(fear - this._lastCurveFear) < 0.05) return
+        this._lastCurveFear = fear
         for (const graph of this.remoteGraphs.values()) {
             if (graph.distortion) graph.distortion.curve = this._makeDistortionCurve(fear)
         }
