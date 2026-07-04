@@ -7,9 +7,9 @@ const RECONNECT_MAX_WAIT  = 16000   // ms — cap for exponential back-off
 
 // VAD (Voice Activity Detection) — Krunker-style gating: only transmit when speaking.
 // Hysteresis: open at higher threshold, close at lower with hangover so end-of-words aren't clipped.
-const VAD_OPEN_RMS   = 0.025
-const VAD_CLOSE_RMS  = 0.012
-const VAD_HANGOVER   = 0.35   // seconds — keep gate open this long after RMS drops
+const VAD_OPEN_RMS   = 0.02
+const VAD_CLOSE_RMS  = 0.008
+const VAD_HANGOVER   = 0.5    // seconds — keep gate open this long after RMS drops
 
 const ICE_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302'  },
@@ -56,6 +56,21 @@ export class VoiceChat {
         this._voiceFear      = 0      // 0..1 — sustained loudness/breathing → fear surrogate
 
         this._wireSignaling()
+
+        // Browsers keep AudioContexts suspended until a user gesture —
+        // retry the unlock (and element playback) on any input, forever.
+        this._unlockHandler = () => this._unlockAudio()
+        document.addEventListener('pointerdown', this._unlockHandler)
+        document.addEventListener('keydown', this._unlockHandler)
+        document.addEventListener('touchstart', this._unlockHandler)
+    }
+
+    _unlockAudio() {
+        const ctx = this._getAudioContext()
+        if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {})
+        for (const graph of this.remoteGraphs.values()) {
+            if (graph.el && graph.el.paused) graph.el.play().catch(() => {})
+        }
     }
 
     // ── PUBLIC ──────────────────────────────────────────────────────────────────
@@ -108,6 +123,7 @@ export class VoiceChat {
         this.peerConnections.clear()
 
         for (const graph of this.remoteGraphs.values()) {
+            try { graph.el?.pause(); if (graph.el) graph.el.srcObject = null } catch {}
             try { graph.source.disconnect()      } catch {}
             try { graph.panner?.disconnect()     } catch {}
             try { graph.filter.disconnect()      } catch {}
@@ -334,6 +350,16 @@ export class VoiceChat {
         if (!ctx || !destination) return
         if (ctx.state === 'suspended') ctx.resume()
 
+        // Chrome bug workaround (crbug.com/121673): a remote WebRTC stream feeds
+        // NO samples into WebAudio unless it is also attached to a media element.
+        // This muted <audio> never plays out loud — it just primes the stream so
+        // the graph below actually receives audio.
+        const el = new Audio()
+        el.srcObject = stream
+        el.muted    = true
+        el.autoplay = true
+        el.play().catch(() => {})   // retried on the next user gesture by _unlockAudio
+
         const source     = ctx.createMediaStreamSource(stream)
         const panner     = ctx.createPanner()
         const filter     = ctx.createBiquadFilter()
@@ -365,7 +391,7 @@ export class VoiceChat {
         filter.connect(distortion)
         distortion.connect(gain)
         gain.connect(destination)
-        this.remoteGraphs.set(peerId, { source, panner, filter, distortion, gain })
+        this.remoteGraphs.set(peerId, { source, panner, filter, distortion, gain, el })
     }
 
     _updateRemoteVolumes(peers) {
@@ -389,8 +415,19 @@ export class VoiceChat {
     }
 
     _updateMicLevel(dt) {
-        if (!this.analyser || !this.analyserData) return
         this._panicCooldown = Math.max(0, this._panicCooldown - dt)
+
+        // FAIL OPEN: if the analyser can't actually read the mic (no analyser, or
+        // AudioContext still suspended → RMS reads 0 forever), do NOT let the VAD
+        // gate mute the track — that silenced everyone permanently.
+        const ctx = this._getAudioContext()
+        if (!this.analyser || !this.analyserData || !ctx || ctx.state !== 'running') {
+            const open = this._pushToTalk ? this._pttHeld : true
+            this._vadOpen = open
+            this._setMicTransmitting(open)
+            return
+        }
+
         this._levelTimer += dt
         if (this._levelTimer < 0.08) return
         const tickDt = this._levelTimer
@@ -550,6 +587,7 @@ export class VoiceChat {
 
         const graph = this.remoteGraphs.get(peerId)
         if (graph) {
+            try { graph.el?.pause(); if (graph.el) graph.el.srcObject = null } catch {}
             try { graph.source.disconnect()      } catch {}
             try { graph.panner?.disconnect()     } catch {}
             try { graph.filter.disconnect()      } catch {}

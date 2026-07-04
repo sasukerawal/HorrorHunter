@@ -33,8 +33,18 @@ export class NetGun {
 
     _setupInput() {
         document.addEventListener('mousedown', (e) => {
-            if (e.button === 0) this._fire()
+            if (e.button === 0 && this._uiClear()) this._fire()
         })
+    }
+
+    /** Never fire through the lobby / intro / game-over overlays —
+     *  otherwise the click that dismisses the intro wastes a net + cooldown. */
+    _uiClear() {
+        for (const id of ['ui-overlay', 'controls-intro', 'gameover-overlay']) {
+            const el = document.getElementById(id)
+            if (el && !el.classList.contains('hidden')) return false
+        }
+        return true
     }
 
     setPeerPlayerId(id) { this.peerPlayerId = id }
@@ -46,7 +56,7 @@ export class NetGun {
     /** Fixed bloom — crosshair and spread stay constant regardless of fear/BPM */
     getBloom()             { return this.baseBloom }
     /** Called from mobile tap-to-shoot and gamepad trigger */
-    tryFireFromMobile()    { this._fire() }
+    tryFireFromMobile()    { if (this._uiClear()) this._fire() }
 
     _fire() {
         if (this.cooldown > 0) return

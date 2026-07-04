@@ -50,8 +50,12 @@
     </div>
   </div>
 
-  <!-- Biometric camera (hidden video element for face-detection BPM) -->
-  <video id="biometric-cam" style="display:none" playsinline autoplay muted></video>
+  <!-- Biometric camera — rendered at 2px/2% opacity, NOT display:none:
+       Chrome never fires requestVideoFrameCallback for non-composited videos,
+       which would stall the VitalLens BPM pipeline before its first frame. -->
+  <video id="biometric-cam"
+    style="position:fixed;right:0;bottom:0;width:2px;height:2px;opacity:0.02;pointer-events:none;z-index:5"
+    playsinline autoplay muted></video>
 
   <!-- ======================== MOBILE CONTROLS ======================== -->
   <div id="mobile-controls" class="hidden">

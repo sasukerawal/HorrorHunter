@@ -13,6 +13,13 @@ import { AssetManager } from './assets.js'
 import { VoiceChat } from './voice.js'
 import * as THREE from 'three'
 
+// Surface any runtime error loudly — a crashed RAF loop otherwise looks like
+// "nothing works" (no shooting, no movement) with an empty screen.
+window.addEventListener('error', (e) =>
+    console.error('[GAME ERROR]', e.message, '@', e.filename, ':', e.lineno))
+window.addEventListener('unhandledrejection', (e) =>
+    console.error('[GAME PROMISE ERROR]', e.reason))
+
 const socket = io(import.meta.env.VITE_BACKEND_URL || undefined)
 
 const engine = new Engine()

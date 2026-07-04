@@ -104,12 +104,20 @@ export class Biometrics {
             if (!this.videoEl) {
                 this.videoEl = document.createElement('video')
                 this.videoEl.id = 'biometric-cam'
-                this.videoEl.style.display = 'none'
                 this.videoEl.setAttribute('playsinline', '')
                 this.videoEl.setAttribute('autoplay', '')
                 this.videoEl.muted = true
                 document.body.appendChild(this.videoEl)
             }
+            // VitalLens waits on requestVideoFrameCallback, which Chrome NEVER
+            // fires for display:none videos (they are never composited) — the
+            // pipeline stalls before its first frame and BPM never appears.
+            // Keep the element rendered but visually imperceptible instead.
+            Object.assign(this.videoEl.style, {
+                display: 'block', position: 'fixed', right: '0', bottom: '0',
+                width: '2px', height: '2px', opacity: '0.02',
+                pointerEvents: 'none', zIndex: '5',
+            })
 
             if (!navigator.mediaDevices?.getUserMedia) throw new Error('getUserMedia unavailable')
 
@@ -310,7 +318,7 @@ export class Biometrics {
                 this._bpmStatus = 'unavailable'
                 this._setIndicator('VITALLENS UNAVAILABLE')
             }
-        }, 25000)
+        }, 15000)
     }
 
     // ── PRIVATE — MEDIAPIPE INIT ───────────────────────────────────────────────
