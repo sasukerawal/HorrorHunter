@@ -1,9 +1,17 @@
-// src/voice.js — Native WebRTC proximity voice + prey panic cues for Hunter.
+// src/voice.js — Proximity voice. Transport priority:
+//   1. WebRTC P2P (STUN)            — best latency
+//   2. WebRTC via TURN (env config) — covers symmetric NATs, still low latency
+//   3. socket.io PCM relay          — LAST resort. TCP means head-of-line
+//      blocking (a lost packet stalls the stream), so quality degrades under
+//      loss — but degraded audio beats the silence it replaces. Only engages
+//      when both WebRTC paths stay down for a peer.
 
 const VOICE_RANGE         = 42
 const PANIC_RMS_THRESHOLD = 0.18
 const PANIC_COOLDOWN      = 1.4
 const RECONNECT_MAX_WAIT  = 16000   // ms — cap for exponential back-off
+const RELAY_GRACE_MS      = 8000    // ms — WebRTC gets this long before relay kicks in
+const RELAY_RATE          = 16000   // Hz — mono PCM sample rate for relayed audio
 
 // VAD (Voice Activity Detection) — Krunker-style gating: only transmit when speaking.
 // Hysteresis: open at higher threshold, close at lower with hangover so end-of-words aren't clipped.
@@ -11,16 +19,16 @@ const VAD_OPEN_RMS   = 0.02
 const VAD_CLOSE_RMS  = 0.008
 const VAD_HANGOVER   = 0.5    // seconds — keep gate open this long after RMS drops
 
-const ICE_SERVERS = [
+// STUN handles NAT discovery; a real TURN server (configured via env — see
+// .env.example) is REQUIRED for peers behind symmetric NATs / blocked UDP.
+// The old anonymous openrelay TURN is dead (now requires an account), so it
+// was removed — dead TURN entries only slow down ICE gathering.
+const STUN_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302'  },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun.cloudflare.com:3478' },
-    {
-        urls:       'turn:a.relay.metered.ca:80',
-        username:   'openrelayproject',
-        credential: 'openrelayproject',
-    },
+    { urls: 'stun:global.stun.twilio.com:3478' },
 ]
 
 export class VoiceChat {
@@ -55,6 +63,22 @@ export class VoiceChat {
         this._currentRMS     = 0
         this._voiceFear      = 0      // 0..1 — sustained loudness/breathing → fear surrogate
 
+        // ICE — STUN immediately; TURN credentials load async from env config
+        this._iceServers = [...STUN_SERVERS]
+        this._turnReady  = false
+        this._icePromise = this._initIceServers()
+
+        // Transport health + socket.io relay fallback
+        this._voiceOut     = null        // dedicated output gain — full volume, not the SFX master
+        this._startedAt    = 0           // Date.now() when start() ran
+        this._pcCreatedAt  = new Map()   // peerId → creation timestamp
+        this._webrtcLive   = new Set()   // peerIds currently connected over WebRTC
+        this._relaySend    = false       // true → stream mic PCM over socket.io
+        this._relayRx      = new Map()   // peerId → next scheduled playback time
+        this._relayProc    = null        // ScriptProcessorNode capturing mic PCM
+        this._statusEl     = null
+        this._lastStatusText = null
+
         this._wireSignaling()
 
         // Browsers keep AudioContexts suspended until a user gesture —
@@ -73,6 +97,55 @@ export class VoiceChat {
         }
     }
 
+    /** Public: resume audio + retry element playback. main.js calls this from
+     *  REAL user-gesture handlers (lobby buttons) — the only place browsers
+     *  are guaranteed to honour AudioContext.resume(). */
+    unlockAudio() { this._unlockAudio() }
+
+    /**
+     * Resolve the ICE server list. TURN is required for symmetric NATs; config
+     * comes from Vite env (see .env.example):
+     *   VITE_TURN_CREDENTIALS_URL — a Metered-style endpoint returning a JSON
+     *     array of iceServers (create a free app at metered.ca, 50 GB/mo)
+     *   VITE_TURN_URL / VITE_TURN_USERNAME / VITE_TURN_CREDENTIAL — static TURN
+     */
+    async _initIceServers() {
+        const servers = [...STUN_SERVERS]
+        const credUrl = import.meta.env?.VITE_TURN_CREDENTIALS_URL
+        const turnUrl = import.meta.env?.VITE_TURN_URL
+        try {
+            if (credUrl) {
+                const ctrl = new AbortController()
+                const timer = setTimeout(() => ctrl.abort(), 3500)
+                const resp = await fetch(credUrl, { signal: ctrl.signal })
+                clearTimeout(timer)
+                if (resp.ok) {
+                    const fetched = await resp.json()
+                    if (Array.isArray(fetched) && fetched.length) {
+                        servers.push(...fetched)
+                        this._turnReady = true
+                        console.log(`[Voice] TURN credentials loaded (${fetched.length} ICE entries)`)
+                    }
+                }
+            } else if (turnUrl) {
+                servers.push({
+                    urls:       turnUrl,
+                    username:   import.meta.env?.VITE_TURN_USERNAME   ?? '',
+                    credential: import.meta.env?.VITE_TURN_CREDENTIAL ?? '',
+                })
+                this._turnReady = true
+                console.log('[Voice] Static TURN server configured')
+            }
+        } catch (err) {
+            console.warn('[Voice] TURN credential fetch failed:', err.message)
+        }
+        if (!this._turnReady) {
+            console.warn('[Voice] No TURN server configured — cross-network P2P may fail for strict NATs; the socket relay will cover those peers. Set VITE_TURN_CREDENTIALS_URL (see .env.example).')
+        }
+        this._iceServers = servers
+        return servers
+    }
+
     // ── PUBLIC ──────────────────────────────────────────────────────────────────
 
     async start(role, peers = []) {
@@ -81,8 +154,15 @@ export class VoiceChat {
         this.peerRoles = new Map(peers.map(p => [p.id, p.role]))
         this._micAttempted = false
         this._breathWindow.length = 0
+        this._startedAt = Date.now()
 
         console.log(`[Voice] Starting as ${role}; peers=${peers.map(p => `${p.id}:${p.role}`).join(', ') || 'none'}`)
+
+        // Give TURN credentials up to 4 s to arrive before dialing peers —
+        // connections made without TURN can't reach symmetric-NAT peers.
+        try {
+            await Promise.race([this._icePromise, new Promise(r => setTimeout(r, 4000))])
+        } catch {}
 
         try {
             this.localStream = await navigator.mediaDevices.getUserMedia({
@@ -110,6 +190,7 @@ export class VoiceChat {
      *        (no position received yet) stay audible at a default mid volume.
      */
     update(dt, peers = null) {
+        this._updateTransportHealth()
         this._updateRemoteVolumes(peers)
         this._updateMicLevel(dt)
     }
@@ -119,11 +200,18 @@ export class VoiceChat {
         this._reconnectTimers.clear()
         this._reconnectDelay.clear()
 
+        try { this._relayProc?.disconnect() } catch {}
+        this._relayProc = null
+        this._relaySend = false
+        this._pcCreatedAt.clear()
+        this._webrtcLive.clear()
+        this._relayRx.clear()
+
         for (const pc of this.peerConnections.values()) { try { pc.close() } catch {} }
         this.peerConnections.clear()
 
         for (const graph of this.remoteGraphs.values()) {
-            try { graph.el?.pause(); if (graph.el) graph.el.srcObject = null } catch {}
+            try { graph.el?.pause(); if (graph.el) { graph.el.srcObject = null; graph.el.remove() } } catch {}
             try { graph.source.disconnect()      } catch {}
             try { graph.panner?.disconnect()     } catch {}
             try { graph.filter.disconnect()      } catch {}
@@ -181,6 +269,15 @@ export class VoiceChat {
 
         this.socket.on('peerDisconnected', ({ id }) => {
             this._closePeer(id, false)
+            this.peerRoles.delete(id)
+            this._pcCreatedAt.delete(id)
+            this._webrtcLive.delete(id)
+            this._relayRx.delete(id)
+        })
+
+        // Relayed PCM audio from a peer whose WebRTC path never connected
+        this.socket.on('voiceData', ({ id, chunk }) => {
+            this._playRelayChunk(id, chunk)
         })
     }
 
@@ -228,11 +325,12 @@ export class VoiceChat {
         if (this.peerConnections.has(peerId)) return this.peerConnections.get(peerId)
 
         const pc = new RTCPeerConnection({
-            iceServers:    ICE_SERVERS,
+            iceServers:    this._iceServers,
             bundlePolicy:  'max-bundle',
             rtcpMuxPolicy: 'require',
         })
         this.peerConnections.set(peerId, pc)
+        this._pcCreatedAt.set(peerId, Date.now())
 
         if (this.localStream?.getAudioTracks().length) {
             for (const track of this.localStream.getTracks()) {
@@ -341,26 +439,138 @@ export class VoiceChat {
         this.analyser.fftSize = 512
         this.analyserData = new Uint8Array(this.analyser.fftSize)
         source.connect(this.analyser)
+        this._setupRelayCapture(ctx, source)
     }
 
-    _setupRemoteGraph(peerId, stream) {
-        if (this.remoteGraphs.has(peerId)) return
-        const ctx         = this._getAudioContext()
-        const destination = this.audioSystem?.masterGain ?? ctx?.destination
-        if (!ctx || !destination) return
+    // ── PRIVATE — SOCKET.IO AUDIO RELAY (fallback when WebRTC can't connect) ────
+
+    /** Capture mic PCM so it can be streamed over the socket when needed.
+     *  Costs nothing while _relaySend is false (callback exits immediately). */
+    _setupRelayCapture(ctx, source) {
+        // ScriptProcessor is deprecated but universally supported; 4096 ≈ 85 ms @48k
+        const proc = ctx.createScriptProcessor(4096, 1, 1)
+        proc.onaudioprocess = (e) => {
+            if (!this._relaySend || !this.isTransmitting()) return
+            const input = e.inputBuffer.getChannelData(0)
+            const pcm = this._downsampleToInt16(input, ctx.sampleRate, RELAY_RATE)
+            if (pcm) this.socket.volatile.emit('voiceData', pcm.buffer)
+        }
+        source.connect(proc)
+        // A ScriptProcessor only fires when connected to the destination — mute it
+        const sink = ctx.createGain()
+        sink.gain.value = 0
+        proc.connect(sink)
+        sink.connect(ctx.destination)
+        this._relayProc = proc
+    }
+
+    _downsampleToInt16(input, fromRate, toRate) {
+        const ratio  = fromRate / toRate
+        const outLen = Math.floor(input.length / ratio)
+        if (outLen <= 0) return null
+        const out = new Int16Array(outLen)
+        for (let i = 0; i < outLen; i++) {
+            const idx  = i * ratio
+            const i0   = Math.floor(idx)
+            const i1   = Math.min(input.length - 1, i0 + 1)
+            const s    = input[i0] + (input[i1] - input[i0]) * (idx - i0)
+            out[i] = Math.max(-32768, Math.min(32767, s * 32767))
+        }
+        return out
+    }
+
+    /** Play a relayed PCM chunk through the peer's normal spatial graph, so
+     *  proximity volume, LOS muffle and fear distortion still apply. */
+    _playRelayChunk(peerId, chunk) {
+        if (this._webrtcLive.has(peerId)) return   // already hearing them over WebRTC
+        const ctx = this._getAudioContext()
+        if (!ctx || ctx.state !== 'running') return
+        const graph = this._ensureGraph(peerId)
+        if (!graph) return
+
+        let int16
+        try {
+            if (chunk instanceof ArrayBuffer)          int16 = new Int16Array(chunk)
+            else if (ArrayBuffer.isView(chunk))        int16 = new Int16Array(chunk.buffer, chunk.byteOffset, Math.floor(chunk.byteLength / 2))
+            else return
+        } catch { return }
+        if (!int16.length) return
+
+        let buf
+        try { buf = ctx.createBuffer(1, int16.length, RELAY_RATE) } catch { return }
+        const ch = buf.getChannelData(0)
+        for (let i = 0; i < int16.length; i++) ch[i] = int16[i] / 32768
+
+        const src = ctx.createBufferSource()
+        src.buffer = buf
+        src.connect(graph.panner)
+        // Schedule chunks back-to-back for gapless playback
+        const nextAt = Math.max(ctx.currentTime + 0.02, this._relayRx.get(peerId) ?? 0)
+        src.start(nextAt)
+        this._relayRx.set(peerId, nextAt + buf.duration)
+    }
+
+    /** Decide per-peer transport: WebRTC when connected; otherwise, after a grace
+     *  period, stream/accept audio via the socket.io relay. Runs at ~10 Hz. */
+    _updateTransportHealth() {
+        if (!this.role || !this.peerRoles.size) return
+        const now = Date.now()
+        let needRelay = false
+
+        for (const peerId of this.peerRoles.keys()) {
+            const pc = this.peerConnections.get(peerId)
+            if (pc && pc.connectionState === 'connected') {
+                this._webrtcLive.add(peerId)
+                continue
+            }
+            this._webrtcLive.delete(peerId)
+            const since = this._pcCreatedAt.get(peerId) ?? this._startedAt
+            if (now - since > RELAY_GRACE_MS) needRelay = true
+        }
+
+        if (needRelay !== this._relaySend) {
+            this._relaySend = needRelay
+            console.log(`[Voice] transport: ${needRelay ? 'socket.io RELAY active (WebRTC unreachable for ≥1 peer)' : 'all peers on WebRTC P2P'}`)
+        }
+        this._updateStatusIndicator()
+    }
+
+    _updateStatusIndicator() {
+        if (!this._statusEl) this._statusEl = document.getElementById('voice-status')
+        if (!this._statusEl) return
+        let text, color
+        if (!this.peerRoles.size)                          { text = '';                      color = '#888' }
+        else if (!this.localStream && this._micAttempted)  { text = '🎙 VOICE: NO MIC';      color = '#ff003c' }
+        else if (this._webrtcLive.size >= this.peerRoles.size) { text = '🎙 VOICE: P2P';     color = '#00ffcc' }
+        else if (this._relaySend)                          { text = '🎙 VOICE: RELAY';       color = '#ff9900' }
+        else                                               { text = '🎙 VOICE: CONNECTING…'; color = '#888' }
+        if (text !== this._lastStatusText) {
+            this._lastStatusText = text
+            this._statusEl.textContent = text
+            this._statusEl.style.color = color
+        }
+    }
+
+    /** Voice gets its own output gain at FULL volume — the game SFX master sits
+     *  at 0.4, which made voices quiet even when everything else worked. */
+    _getVoiceOut(ctx) {
+        if (!this._voiceOut) {
+            this._voiceOut = ctx.createGain()
+            this._voiceOut.gain.value = 1.0
+            this._voiceOut.connect(ctx.destination)
+        }
+        return this._voiceOut
+    }
+
+    /** Build (or return) the per-peer spatial chain: panner → filter → distortion
+     *  → gain → voiceOut. Works with no WebRTC stream so relayed PCM can use it. */
+    _ensureGraph(peerId) {
+        const existing = this.remoteGraphs.get(peerId)
+        if (existing) return existing
+        const ctx = this._getAudioContext()
+        if (!ctx) return null
         if (ctx.state === 'suspended') ctx.resume()
 
-        // Chrome bug workaround (crbug.com/121673): a remote WebRTC stream feeds
-        // NO samples into WebAudio unless it is also attached to a media element.
-        // This muted <audio> never plays out loud — it just primes the stream so
-        // the graph below actually receives audio.
-        const el = new Audio()
-        el.srcObject = stream
-        el.muted    = true
-        el.autoplay = true
-        el.play().catch(() => {})   // retried on the next user gesture by _unlockAudio
-
-        const source     = ctx.createMediaStreamSource(stream)
         const panner     = ctx.createPanner()
         const filter     = ctx.createBiquadFilter()
         const distortion = ctx.createWaveShaper()
@@ -385,13 +595,52 @@ export class VoiceChat {
         distortion.oversample  = '2x'
         gain.gain.value        = 0
 
-        // Chain: source → panner (HRTF direction) → filter (LOS muffle) → distortion (fear) → gain (volume) → out
-        source.connect(panner)
+        // Chain: [source] → panner (HRTF direction) → filter (LOS muffle) → distortion (fear) → gain (volume) → voiceOut
         panner.connect(filter)
         filter.connect(distortion)
         distortion.connect(gain)
-        gain.connect(destination)
-        this.remoteGraphs.set(peerId, { source, panner, filter, distortion, gain, el })
+        gain.connect(this._getVoiceOut(ctx))
+        const graph = { source: null, panner, filter, distortion, gain, el: null }
+        this.remoteGraphs.set(peerId, graph)
+        return graph
+    }
+
+    /** Attach a live WebRTC stream to the peer's graph. */
+    _setupRemoteGraph(peerId, stream) {
+        const graph = this._ensureGraph(peerId)
+        if (!graph || graph.source) return
+        const ctx = this._getAudioContext()
+        if (!ctx) return
+
+        // Chrome bug workaround (crbug.com/121673): a remote WebRTC stream feeds
+        // NO samples into WebAudio unless it is also attached to a media element.
+        // This muted <audio> never plays out loud — it just primes the stream so
+        // the graph actually receives audio. It is BOTH referenced (graph.el)
+        // and attached to the DOM: a detached media element risks GC and some
+        // browsers deprioritize playback for elements outside the document.
+        const el = new Audio()
+        el.srcObject = stream
+        el.muted    = true
+        el.autoplay = true
+        el.setAttribute('playsinline', '')   // iOS: never go fullscreen
+        this._getAudioSink().appendChild(el)
+        el.play().catch(() => {})   // retried on the next user gesture by _unlockAudio
+
+        graph.el     = el
+        graph.source = ctx.createMediaStreamSource(stream)
+        graph.source.connect(graph.panner)
+    }
+
+    /** Hidden DOM container that keeps every remote <audio> element alive. */
+    _getAudioSink() {
+        let sink = document.getElementById('voice-audio-sink')
+        if (!sink) {
+            sink = document.createElement('div')
+            sink.id = 'voice-audio-sink'
+            sink.style.display = 'none'
+            document.body.appendChild(sink)
+        }
+        return sink
     }
 
     _updateRemoteVolumes(peers) {
@@ -587,7 +836,7 @@ export class VoiceChat {
 
         const graph = this.remoteGraphs.get(peerId)
         if (graph) {
-            try { graph.el?.pause(); if (graph.el) graph.el.srcObject = null } catch {}
+            try { graph.el?.pause(); if (graph.el) { graph.el.srcObject = null; graph.el.remove() } } catch {}
             try { graph.source.disconnect()      } catch {}
             try { graph.panner?.disconnect()     } catch {}
             try { graph.filter.disconnect()      } catch {}

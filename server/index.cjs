@@ -156,6 +156,14 @@ io.on('connection', (socket) => {
         io.to(targetId).emit('voiceIceCandidate', { fromId: socket.id, candidate })
     })
 
+    // PCM audio relay — fallback voice transport when peers' WebRTC can't
+    // connect (blocked UDP / symmetric NAT). ~32 KB/s per speaking player,
+    // only while their WebRTC path is down AND they are actually talking.
+    socket.on('voiceData', (chunk) => {
+        if (!socket.lobbyCode || !chunk) return
+        socket.volatile.to(socket.lobbyCode).emit('voiceData', { id: socket.id, chunk })
+    })
+
     socket.on('voicePanic', ({ level, type = 'panic' }) => {
         const code = socket.lobbyCode
         const lobby = lobbies[code]

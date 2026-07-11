@@ -15,7 +15,11 @@ export class AudioSystem {
         this._peerStepTimer = 0
     }
 
+    /** Idempotent — safe to call from every user gesture. Creating the context
+     *  INSIDE a real click means it starts in the 'running' state (autoplay
+     *  policy), instead of suspended-until-someone-notices. */
     init() {
+        if (this.ctx) { this._resume(); return }
         try {
             this.ctx = new (window.AudioContext || window.webkitAudioContext)()
             this.masterGain = this.ctx.createGain()

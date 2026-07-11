@@ -75,6 +75,17 @@ document.addEventListener('keyup', (e) => {
     if (e.code === 'KeyV') voice.pttHeld(false)
 })
 
+// Autoplay policy: browsers only guarantee a running AudioContext when it is
+// created/resumed INSIDE a real click. The lobby buttons are clicks every
+// player necessarily makes before the game starts — unlock audio right there.
+const unlockAudioFromGesture = () => {
+    audio.init()
+    voice.unlockAudio()
+}
+for (const id of ['btn-host', 'btn-join', 'btn-start-game']) {
+    document.getElementById(id)?.addEventListener('click', unlockAudioFromGesture)
+}
+
 voice.onPanicCue = (_fromId, type = 'panic') => {
     const dist = player ? player.getPeerDistance() : Infinity
     if (dist > 22) return
@@ -389,6 +400,8 @@ function showControlsIntro(assignedRole) {
         clearInterval(iv)
         overlay.classList.add('hidden')
         gameRunning = true
+        // Click-dismiss is a real gesture — one more chance to unlock audio
+        unlockAudioFromGesture()
     }
 
     const iv = setInterval(() => {
@@ -412,6 +425,7 @@ function setupMobileControls() {
         document.getElementById('m-phase')?.classList.remove('hidden')
     } else {
         document.getElementById('m-flashlight')?.classList.remove('hidden')
+        document.getElementById('m-fire')?.classList.remove('hidden')
     }
 
     // ── Left joystick ──
@@ -491,8 +505,8 @@ function setupMobileControls() {
         for (const t of e.changedTouches) {
             if (t.identifier !== lookId) continue
             lookId = -1
-            // Tap = shoot for hunter (< 200ms, < 12px movement)
-            if (role === 'hunter' && netGun && lookMoved < 12 && Date.now() - lookStart < 200) {
+            // Tap = shoot for hunter (< 300ms, < 20px movement — forgiving on shaky thumbs)
+            if (role === 'hunter' && netGun && lookMoved < 20 && Date.now() - lookStart < 300) {
                 netGun.tryFireFromMobile()
             }
         }
@@ -512,6 +526,12 @@ function setupMobileControls() {
 
     document.getElementById('m-flashlight')?.addEventListener('touchstart', e => {
         e.preventDefault(); fKeyPressed = true
+    }, { passive: false })
+
+    // Dedicated fire button — more reliable than tap-to-shoot on the look zone
+    document.getElementById('m-fire')?.addEventListener('touchstart', e => {
+        e.preventDefault()
+        if (netGun) netGun.tryFireFromMobile()
     }, { passive: false })
 
     document.getElementById('m-phase')?.addEventListener('touchstart', e => {

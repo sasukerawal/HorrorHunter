@@ -59,7 +59,7 @@ function loadTextures(renderer) {
             (err) => console.warn('[MapTex] Failed to load', file, err)
         )
         tex.colorSpace = THREE.SRGBColorSpace
-        tex.anisotropy = Math.min(8, maxAniso)
+        tex.anisotropy = Math.min(16, maxAniso)   // negligible cost, much crisper floors at glancing angles
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping
         tex.repeat.set(repeatX, repeatY)
         return tex

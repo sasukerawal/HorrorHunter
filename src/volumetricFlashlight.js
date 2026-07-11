@@ -3,7 +3,7 @@ import * as THREE from 'three'
 
 const BEAM_LENGTH    = 40
 const BEAM_ANGLE     = Math.PI / 7   // ~25.7 deg — tight, believable torch
-const BASE_INTENSITY = 40            // bright enough to read at full hunter exposure
+const BASE_INTENSITY = 65            // bright, readable beam at full hunter exposure
 
 const VOLUMETRIC_VS = /* glsl */`
     varying vec3 vLocalPos;
@@ -102,7 +102,7 @@ export class VolumetricFlashlight {
         this.light.target.position.set(0, 0, -10)
 
         // Warm fill so close surfaces don't go pitch-black at the hunter's feet
-        this.fill = new THREE.PointLight('#fff5e0', 2.5, 4)
+        this.fill = new THREE.PointLight('#fff5e0', 4, 6)
         camera.add(this.fill)
 
         // ───── Visible volumetric cone ─────
@@ -155,7 +155,7 @@ export class VolumetricFlashlight {
             this._uniformTimer = 0
             this.uniforms.uTime.value      = this._timeAcc
             this.uniforms.uFear.value      = fearLevel
-            this.uniforms.uIntensity.value = 0.85 + fearLevel * 0.28
+            this.uniforms.uIntensity.value = 1.0 + fearLevel * 0.25
             this.uniforms.uLOD.value       = fearLevel > 0.4 ? 1.0 : 0.0
         }
 

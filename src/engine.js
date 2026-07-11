@@ -3,7 +3,7 @@ import * as THREE from 'three'
 import { generateMap } from './map.js'
 import { VolumetricFlashlight } from './volumetricFlashlight.js'
 
-const FLASHLIGHT_BASE_INTENSITY = 40             // bright enough to fill the cone at 0.85 exposure
+const FLASHLIGHT_BASE_INTENSITY = 65             // bright, readable beam at 0.85 exposure
 const FLASHLIGHT_BASE_ANGLE     = Math.PI / 7   // ~25.7 deg
 const FLASHLIGHT_BASE_DISTANCE  = 40
 const HUNTER_BASE_EXPOSURE      = 0.85           // dark world; flashlight punches through
@@ -43,9 +43,10 @@ export class Engine {
         this._fpsTimer   = 0
         this._currentFPS = 60
         this._lowspec    = new URLSearchParams(window.location.search).get('lowspec') === '1'
-        // lowspec: start at minimum tier; normal: start at mid tier, scale up if FPS allows
+        // lowspec: start at minimum tier; normal: start at mid tier, scale up if FPS allows.
+        // Top tier is native resolution — only reached while holding 58+ fps.
         this._pixelTier   = this._lowspec ? 0 : 1
-        this._pixelRatios = this._lowspec ? [0.35, 0.45, 0.55] : [0.5, 0.7, 0.85]
+        this._pixelRatios = this._lowspec ? [0.35, 0.45, 0.55] : [0.5, 0.7, 0.85, 1.0]
 
         // Occlusion culling
         this.rooms             = []   // [{name, x, z, w, h}]
@@ -82,7 +83,9 @@ export class Engine {
     }
 
     init(canvas, assetManager = null) {
-        this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' })
+        // MSAA is cheap for this geometry on non-lowspec GPUs and kills the
+        // jagged edges that the sub-native pixel ratios otherwise amplify.
+        this.renderer = new THREE.WebGLRenderer({ canvas, antialias: !this._lowspec, powerPreference: 'high-performance' })
         this.renderer.setSize(window.innerWidth, window.innerHeight)
         this._applyPixelTier()
         this.renderer.shadowMap.enabled = false
@@ -304,10 +307,10 @@ export class Engine {
         light.angle    = FLASHLIGHT_BASE_ANGLE * (1 - tunnel * 0.5)
         light.distance = FLASHLIGHT_BASE_DISTANCE - fearLevel * 6
 
-        const baseInt = FLASHLIGHT_BASE_INTENSITY * (1 - tunnel * 0.4)
+        const baseInt = FLASHLIGHT_BASE_INTENSITY * (1 - tunnel * 0.3)
         const flicker = this.volumetric.getCurrentFlicker()
         light.intensity = baseInt * flicker
-        fill.intensity  = baseInt * flicker * 0.25
+        fill.intensity  = baseInt * flicker * 0.3
 
         // Beam shake when BPM > 100.
         if (bpm > TUNNEL_BPM_THRESHOLD) {
@@ -402,10 +405,11 @@ export class Engine {
 
     _adaptPixelRatio() {
         const fps = this._currentFPS
+        const maxTier = this._pixelRatios.length - 1
         let targetTier = this._pixelTier
-        if (fps < 40 && this._pixelTier > 0) targetTier = 0
-        else if (fps < 50 && this._pixelTier > 1) targetTier = 1
-        else if (fps > 58 && this._pixelTier < 2) targetTier = 2
+        if (fps < 40)      targetTier = Math.max(0, this._pixelTier - 2)   // struggling — drop hard
+        else if (fps < 50) targetTier = Math.max(0, this._pixelTier - 1)
+        else if (fps > 58) targetTier = Math.min(maxTier, this._pixelTier + 1)  // headroom — step up
         if (targetTier === this._pixelTier) return
         this._pixelTier = targetTier
         this._applyPixelTier()
