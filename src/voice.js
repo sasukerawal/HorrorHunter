@@ -13,11 +13,17 @@ const RECONNECT_MAX_WAIT  = 16000   // ms — cap for exponential back-off
 const RELAY_GRACE_MS      = 8000    // ms — WebRTC gets this long before relay kicks in
 const RELAY_RATE          = 16000   // Hz — mono PCM sample rate for relayed audio
 
-// VAD (Voice Activity Detection) — Krunker-style gating: only transmit when speaking.
-// Hysteresis: open at higher threshold, close at lower with hangover so end-of-words aren't clipped.
-const VAD_OPEN_RMS   = 0.02
-const VAD_CLOSE_RMS  = 0.008
+// VAD (Voice Activity Detection) — gates ONLY the PCM relay stream (bandwidth)
+// and the HUD mic indicator. The WebRTC track itself is ALWAYS transmitting
+// (outside push-to-talk mode): Opus DTX makes silence nearly free, the mic
+// constraints already run noise suppression, and VAD-muting the track is what
+// kept silencing quiet laptop mics entirely. Breathing leaking through is a
+// horror feature, not a bug.
+// Thresholds adapt to each mic's own measured noise floor.
+const VAD_MIN_OPEN   = 0.006  // absolute floor for the open threshold
+const VAD_MIN_CLOSE  = 0.003  // absolute floor for the close threshold
 const VAD_HANGOVER   = 0.5    // seconds — keep gate open this long after RMS drops
+const VAD_START_OPEN_MS = 5000 // relay transmits unconditionally this long after start
 
 // STUN handles NAT discovery; a real TURN server (configured via env — see
 // .env.example) is REQUIRED for peers behind symmetric NATs / blocked UDP.
@@ -58,6 +64,8 @@ export class VoiceChat {
         // VAD state
         this._vadOpen        = false
         this._vadCloseTimer  = 0      // hangover countdown
+        this._noiseFloor     = 0.004  // adaptive per-mic quiet level (EMA)
+        this._vadOpenUntil   = 0      // Date.now() deadline for the start-open grace
         this._pushToTalk     = false  // when true, transmits only while PTT key is held
         this._pttHeld        = false
         this._currentRMS     = 0
@@ -155,6 +163,8 @@ export class VoiceChat {
         this._micAttempted = false
         this._breathWindow.length = 0
         this._startedAt = Date.now()
+        this._vadOpen = true
+        this._vadOpenUntil = Date.now() + VAD_START_OPEN_MS
 
         console.log(`[Voice] Starting as ${role}; peers=${peers.map(p => `${p.id}:${p.role}`).join(', ') || 'none'}`)
 
@@ -691,21 +701,29 @@ export class VoiceChat {
         const rms = Math.sqrt(sum / this.analyserData.length)
         this._currentRMS = rms
 
-        // ── VAD (Voice Activity Detection) ──
-        // Holding V (pttHeld) always forces transmit — overrides both VAD and PTT-only mode.
-        // PTT-only mode: mic is silent unless pttHeld.
-        // VAD mode (default): auto-gate by RMS with hysteresis + hangover.
-        let shouldTransmit
+        // ── ADAPTIVE VAD — gates the relay stream + HUD indicator only ──
+        // Noise floor tracks THIS mic's quiet level: falls fast, rises slowly —
+        // so thresholds fit quiet laptop mics and loud headsets alike.
+        if (rms < this._noiseFloor) this._noiseFloor += (rms - this._noiseFloor) * 0.30
+        else                        this._noiseFloor += (rms - this._noiseFloor) * 0.02
+        const openThresh  = Math.max(VAD_MIN_OPEN,  this._noiseFloor * 2.5 + 0.003)
+        const closeThresh = Math.max(VAD_MIN_CLOSE, this._noiseFloor * 1.4)
+
         if (this._pttHeld) {
-            shouldTransmit = true
+            this._vadOpen = true
         } else if (this._pushToTalk) {
-            shouldTransmit = false
+            this._vadOpen = false
+        } else if (Date.now() < this._vadOpenUntil) {
+            // Round-start grace: relay transmits too, so players immediately hear
+            // that voice works instead of wondering whether it is broken.
+            this._vadOpen = true
         } else {
-            if (rms >= VAD_OPEN_RMS)       { this._vadOpen = true;  this._vadCloseTimer = VAD_HANGOVER }
-            else if (rms < VAD_CLOSE_RMS)  { this._vadCloseTimer = Math.max(0, this._vadCloseTimer - tickDt); if (this._vadCloseTimer <= 0) this._vadOpen = false }
-            shouldTransmit = this._vadOpen
+            if (rms >= openThresh)         { this._vadOpen = true;  this._vadCloseTimer = VAD_HANGOVER }
+            else if (rms < closeThresh)    { this._vadCloseTimer = Math.max(0, this._vadCloseTimer - tickDt); if (this._vadCloseTimer <= 0) this._vadOpen = false }
         }
-        this._setMicTransmitting(shouldTransmit)
+
+        // The WebRTC track is ALWAYS on outside PTT-only mode — never VAD-muted.
+        this._setMicTransmitting(this._pushToTalk ? this._pttHeld : true)
 
         // ── Voice-derived fear (used as emotion fallback when face cam fails) ──
         // Loud sustained speech / hyperventilating → high voice fear.

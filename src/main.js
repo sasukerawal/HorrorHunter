@@ -29,6 +29,9 @@ const audio = new AudioSystem()
 const biometrics = new Biometrics()
 const voice = new VoiceChat(socket, audio)
 
+// Debug handle for field diagnosis + automated tests (read-only inspection)
+window.__bh = { socket, engine, audio, biometrics, voice, get player() { return player } }
+
 let player = null
 let netGun = null
 let viewmodel = null

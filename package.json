@@ -16,6 +16,7 @@
     "vitallens": "^0.4.5"
   },
   "devDependencies": {
+    "puppeteer-core": "^25.3.0",
     "sharp": "^0.34.5",
     "vite": "^5.2.0"
   }
