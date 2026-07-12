@@ -56,6 +56,9 @@ const JUMPSCARE_COOLDOWN = 18
 
 let extractionTimer = 0
 const EXTRACTION_REQUIRED = 5
+let finalMinuteTriggered = false
+const matchStats = { maxBPM: 0, maxFear: 0 }
+const statsFor = () => ({ time: elapsed, maxBPM: matchStats.maxBPM, maxFear: matchStats.maxFear })
 
 // Peer state mirrored from socket
 let peerFear = 0
@@ -222,7 +225,7 @@ socket.on('netHit', (data) => {
                     gameRunning = false
                     socket.emit('caughtPrey')
                     audio.playGameOver('hunter')
-                    hud.showGameOver('hunter')
+                    hud.showGameOver('hunter', statsFor())
                     _spawnCaughtNet(engine.camera, null)
                 }
             }
@@ -239,7 +242,7 @@ socket.on('preyCaught', () => {
     if (role === 'prey') {
         gameRunning = false
         audio.playGameOver('hunter')
-        hud.showGameOver('hunter')
+        hud.showGameOver('hunter', statsFor())
         _spawnCaughtNet(engine.camera, null)
     }
 })
@@ -264,7 +267,7 @@ socket.on('healthPickedUp', ({ id, pickupIndex }) => {
 socket.on('gameOver', ({ winner }) => {
     gameRunning = false
     audio.playGameOver(winner)
-    hud.showGameOver(winner)
+    hud.showGameOver(winner, statsFor())
 })
 
 socket.on('peerDisconnected', ({ id }) => {
@@ -684,7 +687,23 @@ function gameLoop() {
         triggerHunterJumpscare()
     }
 
+    // Hunter hears the prey's REAL heartbeat while closing in (<10 m)
+    if (role === 'hunter' && player && !player.peerIsHiding) {
+        audio.updatePeerHeartbeat(dt, peerBPM, peerDist)
+    }
+
     hud.update(dt, localFear, localBPM)
+
+    // Match stats for the end screen
+    matchStats.maxBPM  = Math.max(matchStats.maxBPM, localBPM)
+    matchStats.maxFear = Math.max(matchStats.maxFear, localFear)
+
+    // Final minute — the hospital's lighting destabilizes, timer pulses
+    if (!finalMinuteTriggered && hud.timeLeft <= 60 && hud.timeLeft > 0) {
+        finalMinuteTriggered = true
+        engine.setTensionMode(true)
+        hud.setFinalMinute()
+    }
 
     // Fear glitch overlays
     if (gameCanvasEl) {
@@ -781,7 +800,7 @@ function gameLoop() {
                 gameRunning = false
                 socket.emit('preyEscaped')
                 audio.playGameOver('prey')
-                hud.showGameOver('prey')
+                hud.showGameOver('prey', statsFor())
             }
         } else {
             extractionTimer = Math.max(0, extractionTimer - dt * 2)

@@ -1,6 +1,8 @@
 // src/biometrics.js — VitalLens rPPG (BPM + RR) + Pulsoid HR + MediaPipe emotion blendshapes
 
-const FACE_DETECT_INTERVAL = 0.40
+// MediaPipe shares the GPU with the renderer — detecting too often causes
+// visible frame spikes. Emotion changes slowly; 0.6 s is plenty.
+const FACE_DETECT_INTERVAL = 0.60
 
 // ── PULSOID ────────────────────────────────────────────────────────────────────
 const PULSOID_HR_URL       = 'https://dev.pulsoid.net/api/v1/data/heart_rate/latest'

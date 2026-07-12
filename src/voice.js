@@ -224,6 +224,7 @@ export class VoiceChat {
             try { graph.el?.pause(); if (graph.el) { graph.el.srcObject = null; graph.el.remove() } } catch {}
             try { graph.source.disconnect()      } catch {}
             try { graph.panner?.disconnect()     } catch {}
+            try { graph.highpass?.disconnect()   } catch {}
             try { graph.filter.disconnect()      } catch {}
             try { graph.distortion?.disconnect() } catch {}
             try { graph.gain.disconnect()        } catch {}
@@ -582,6 +583,7 @@ export class VoiceChat {
         if (ctx.state === 'suspended') ctx.resume()
 
         const panner     = ctx.createPanner()
+        const highpass   = ctx.createBiquadFilter()   // cuts room rumble / AC hum from always-on mics
         const filter     = ctx.createBiquadFilter()
         const distortion = ctx.createWaveShaper()
         const gain       = ctx.createGain()
@@ -599,18 +601,22 @@ export class VoiceChat {
         if (panner.positionX) { panner.positionX.value = 0; panner.positionY.value = 0; panner.positionZ.value = -5 }
         else                  { try { panner.setPosition(0, 0, -5) } catch {} }
 
+        highpass.type            = 'highpass'
+        highpass.frequency.value = 120
+        highpass.Q.value         = 0.7
         filter.type            = 'lowpass'
         filter.frequency.value = 7000
         distortion.curve       = this._makeDistortionCurve(0)
         distortion.oversample  = '2x'
         gain.gain.value        = 0
 
-        // Chain: [source] → panner (HRTF direction) → filter (LOS muffle) → distortion (fear) → gain (volume) → voiceOut
-        panner.connect(filter)
+        // Chain: [source] → panner (HRTF) → highpass (hum cut) → filter (LOS muffle) → distortion (fear) → gain (volume) → voiceOut
+        panner.connect(highpass)
+        highpass.connect(filter)
         filter.connect(distortion)
         distortion.connect(gain)
         gain.connect(this._getVoiceOut(ctx))
-        const graph = { source: null, panner, filter, distortion, gain, el: null }
+        const graph = { source: null, panner, highpass, filter, distortion, gain, el: null }
         this.remoteGraphs.set(peerId, graph)
         return graph
     }
@@ -857,6 +863,7 @@ export class VoiceChat {
             try { graph.el?.pause(); if (graph.el) { graph.el.srcObject = null; graph.el.remove() } } catch {}
             try { graph.source.disconnect()      } catch {}
             try { graph.panner?.disconnect()     } catch {}
+            try { graph.highpass?.disconnect()   } catch {}
             try { graph.filter.disconnect()      } catch {}
             try { graph.distortion?.disconnect() } catch {}
             try { graph.gain.disconnect()        } catch {}

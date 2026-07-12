@@ -270,9 +270,9 @@ export class HUD {
             this.debugBpmDisplay.textContent = this.debugSlider.value
         }
 
-        // Fear pulse wave — throttled to 20 fps (canvas 2D draws are expensive)
+        // Fear pulse wave — throttled to 15 fps (canvas 2D draws are expensive)
         this._graphTimer += dt
-        if (this._graphTimer >= 0.05) {
+        if (this._graphTimer >= 0.066) {
             this._graphTimer = 0
             this.fearHistory.shift()
             this.fearHistory.push(fearLevel)
@@ -299,14 +299,20 @@ export class HUD {
         ctx.lineWidth = 1
         ctx.strokeRect(0, 0, w, h)
 
-        // Pulse wave line
+        // Pulse wave line — gradient cached per quantized fear step (creating
+        // one every draw was measurable garbage churn)
         ctx.beginPath()
         ctx.lineWidth = 1.5
-        const gradient = ctx.createLinearGradient(0, 0, w, 0)
-        gradient.addColorStop(0, `rgba(${r},${g},50,0)`)
-        gradient.addColorStop(0.5, `rgb(${r},${g},50)`)
-        gradient.addColorStop(1, `rgba(${r},${g},50,0.3)`)
-        ctx.strokeStyle = gradient
+        const gradQ = Math.round(fearLevel * 20)
+        if (gradQ !== this._lastGradQ || !this._cachedGrad) {
+            this._lastGradQ = gradQ
+            const grad = ctx.createLinearGradient(0, 0, w, 0)
+            grad.addColorStop(0, `rgba(${r},${g},50,0)`)
+            grad.addColorStop(0.5, `rgb(${r},${g},50)`)
+            grad.addColorStop(1, `rgba(${r},${g},50,0.3)`)
+            this._cachedGrad = grad
+        }
+        ctx.strokeStyle = this._cachedGrad
         // shadowBlur is the most expensive canvas op — only pay for it at real fear
         ctx.shadowBlur = fearLevel > 0.25 ? fearLevel * 12 : 0
         ctx.shadowColor = `rgb(${r},${g},0)`
@@ -331,13 +337,27 @@ export class HUD {
         ctx.fillText(`FEAR ${Math.round(fearLevel * 100)}%`, 6, h - 5)
     }
 
-    showGameOver(winner) {
+    /** Timer goes into panic mode for the final minute. */
+    setFinalMinute() {
+        this.timerEl?.classList.add('timer-panic')
+    }
+
+    showGameOver(winner, stats = null) {
         const overlay = document.getElementById('gameover-overlay')
         const msg = document.getElementById('gameover-msg')
         if (overlay) overlay.classList.remove('hidden')
         if (msg) {
             msg.textContent = winner === 'hunter' ? '🔦 HUNTER WINS — PREY CAUGHT' : '👻 PREY ESCAPED — PREY WINS'
             msg.style.color = winner === 'hunter' ? '#ff3333' : '#33ccff'
+        }
+        const statsEl = document.getElementById('gameover-stats')
+        if (statsEl && stats) {
+            const m = Math.floor(stats.time / 60)
+            const s = Math.floor(stats.time % 60)
+            statsEl.textContent =
+                `SURVIVED ${m}:${String(s).padStart(2, '0')}  ·  ` +
+                `PEAK ♥ ${Math.round(stats.maxBPM)} BPM  ·  ` +
+                `PEAK FEAR ${Math.round(stats.maxFear * 100)}%`
         }
     }
 }

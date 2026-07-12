@@ -13,6 +13,7 @@ export class AudioSystem {
         this._peerFilter = null
         this._peerOsc = null
         this._peerStepTimer = 0
+        this._peerHeartTimer = 0
     }
 
     /** Idempotent — safe to call from every user gesture. Creating the context
@@ -56,7 +57,7 @@ export class AudioSystem {
     playHeartbeat(fearLevel = 0) {
         if (!this.enabled) return
         this._resume()
-        const vol = 0.15 + fearLevel * 0.45
+        const vol = 0.09 + fearLevel * 0.38   // quiet at rest, still swells with fear
         const playBeat = (offset, freq) => {
             const osc = this.ctx.createOscillator()
             const gain = this.ctx.createGain()
@@ -209,11 +210,11 @@ export class AudioSystem {
         const gain = this.ctx.createGain()
         osc.type = 'sine'
         osc.frequency.value = 55
-        gain.gain.value = 0.08
+        gain.gain.value = 0.022   // barely-there room tone — presence, not noise
         const tremolo = this.ctx.createOscillator()
         const tremoloGain = this.ctx.createGain()
         tremolo.frequency.value = 0.25
-        tremoloGain.gain.value = 0.04
+        tremoloGain.gain.value = 0.012
         tremolo.connect(tremoloGain)
         tremoloGain.connect(gain.gain)
         osc.connect(gain)
@@ -383,6 +384,39 @@ export class AudioSystem {
         osc.stop(this.ctx.currentTime + 0.15)
     }
 
+    /** Hunter-side: the prey's REAL (biometric) heartbeat becomes audible while
+     *  closing in — louder and faster the closer and more scared they are. */
+    updatePeerHeartbeat(dt, bpm = 75, distance = Infinity) {
+        if (!this.enabled) return
+        if (distance > 10) { this._peerHeartTimer = 0; return }
+        const interval = 60 / Math.max(40, Math.min(190, bpm))
+        this._peerHeartTimer += dt
+        if (this._peerHeartTimer < interval) return
+        this._peerHeartTimer = 0
+        this._resume()
+
+        const vol = (1 - distance / 10) * 0.3
+        const now = this.ctx.currentTime
+        const beat = (offset, freq) => {
+            const osc = this.ctx.createOscillator()
+            const gain = this.ctx.createGain()
+            const lp = this.ctx.createBiquadFilter()
+            osc.type = 'sine'
+            osc.frequency.value = freq
+            lp.type = 'lowpass'
+            lp.frequency.value = 220
+            gain.gain.setValueAtTime(vol, now + offset)
+            gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.1)
+            osc.connect(lp)
+            lp.connect(gain)
+            gain.connect(this.masterGain)
+            osc.start(now + offset)
+            osc.stop(now + offset + 0.1)
+        }
+        beat(0, 64)
+        beat(0.11, 52)
+    }
+
     // ─── MAIN UPDATE ───
 
     update(dt, fearLevel, isMoving, bpm, peerDistance = Infinity, isLineOfSight = true) {
@@ -393,7 +427,7 @@ export class AudioSystem {
         this.footstepTimer += dt
         if (this.footstepTimer >= stepInterval) {
             this.footstepTimer = 0
-            this.playFootstep(0.2 + fearLevel * 0.4)
+            this.playFootstep(0.14 + fearLevel * 0.3)
         }
 
         // Heartbeat

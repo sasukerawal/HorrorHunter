@@ -31,6 +31,7 @@ export class Engine {
         this.clock           = new THREE.Clock()
         this.onLoadComplete  = null
         this._flickerTimer   = 0
+        this._swayTime       = 0
         this._raycaster      = new THREE.Raycaster()
         this._dustPhase      = 0
         this._lightFlickerTimer = 0
@@ -80,7 +81,13 @@ export class Engine {
         this._emergencyActive = false
         this._emergencyLight  = null
         this._emergencyTimer  = 0
+
+        // Final-minute tension — multiplies room light flicker strength
+        this._tensionMult = 1
     }
+
+    /** Final minute: the whole hospital's lighting gets unstable. */
+    setTensionMode(on) { this._tensionMult = on ? 1.6 : 1 }
 
     init(canvas, assetManager = null) {
         // MSAA is cheap for this geometry on non-lowspec GPUs and kills the
@@ -312,11 +319,14 @@ export class Engine {
         light.intensity = baseInt * flicker
         fill.intensity  = baseInt * flicker * 0.3
 
-        // Beam shake when BPM > 100.
+        // Beam sway when BPM > 100 — layered sines read as unsteady hands;
+        // the old per-frame random offsets read as jitter/glitching.
         if (bpm > TUNNEL_BPM_THRESHOLD) {
             const sh = Math.min(0.07, (bpm - TUNNEL_BPM_THRESHOLD) / 700)
-            light.target.position.x = (Math.random() - 0.5) * sh
-            light.target.position.y = (Math.random() - 0.5) * sh
+            this._swayTime += dt
+            const t = this._swayTime
+            light.target.position.x = (Math.sin(t * 6.7) * 0.6 + Math.sin(t * 11.3) * 0.4) * sh
+            light.target.position.y = (Math.sin(t * 5.1 + 1.7) * 0.6 + Math.sin(t * 9.7 + 0.6) * 0.4) * sh
             light.target.position.z = -10
         } else {
             light.target.position.set(0, 0, -10)
@@ -353,7 +363,7 @@ export class Engine {
             this._lightFlickerTimer = 0
             for (const { light } of this.mapData.roomLights) {
                 if (light.userData.occluded) continue
-                const fs    = light.userData.flickerStrength ?? 0.5
+                const fs    = Math.min(1, (light.userData.flickerStrength ?? 0.5) * this._tensionMult)
                 const baseI = light.userData.baseIntensity ?? 5
                 const mult  = light.userData.flickerMultiplier ?? 1.0
                 const decay = Math.random() > 0.98 ? 0.2 : 1.0

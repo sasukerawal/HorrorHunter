@@ -145,6 +145,7 @@ export class VolumetricFlashlight {
         this._uniformTimer   = 0
         this._timeAcc        = 0
         this._currentFlicker = 1.0
+        this._flickerTarget  = 1.0
     }
 
     update(delta, fearLevel = 0) {
@@ -159,21 +160,25 @@ export class VolumetricFlashlight {
             this.uniforms.uLOD.value       = fearLevel > 0.4 ? 1.0 : 0.0
         }
 
+        // Flicker picks new TARGETS at the same cadence, but the actual value
+        // eases toward them — instant snapping read as jitter, easing reads as
+        // a dying bulb. Fast enough (dt*28) to still feel like a flicker.
         if (fearLevel > 0.8) {
             this._flickerTimer += delta
-            if (this._flickerTimer > 0.04) {
+            if (this._flickerTimer > 0.05) {
                 this._flickerTimer   = 0
-                this._currentFlicker = Math.random() < 0.22 ? 0.05 : (0.4 + Math.random() * 0.7)
+                this._flickerTarget = Math.random() < 0.22 ? 0.05 : (0.4 + Math.random() * 0.7)
             }
         } else if (fearLevel > 0.6) {
             this._flickerTimer += delta
-            if (this._flickerTimer > 0.05 + Math.random() * 0.08) {
+            if (this._flickerTimer > 0.06 + Math.random() * 0.08) {
                 this._flickerTimer   = 0
-                this._currentFlicker = Math.random() < 0.15 ? 0.15 : (0.6 + Math.random() * 0.5)
+                this._flickerTarget = Math.random() < 0.15 ? 0.15 : (0.6 + Math.random() * 0.5)
             }
         } else {
-            this._currentFlicker = 1.0
+            this._flickerTarget = 1.0
         }
+        this._currentFlicker += (this._flickerTarget - this._currentFlicker) * Math.min(1, delta * 28)
         this.uniforms.uFlicker.value = this._currentFlicker
 
         // Cone lives in fxScene — sync its world transform from the camera each frame.

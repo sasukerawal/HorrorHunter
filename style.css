@@ -901,6 +901,26 @@ body::after {
   transition: color 0.4s ease;
 }
 
+/* Final-minute timer panic pulse */
+@keyframes timer-panic-pulse {
+  0%, 100% { transform: scale(1);    text-shadow: 0 0 6px rgba(255, 0, 60, 0.5); }
+  50%      { transform: scale(1.08); text-shadow: 0 0 16px rgba(255, 0, 60, 0.95); }
+}
+
+.timer-panic {
+  color: #ff003c !important;
+  animation: timer-panic-pulse 1s ease-in-out infinite;
+}
+
+/* End-screen match stats */
+#gameover-stats {
+  margin-top: 14px;
+  font-size: 0.8rem;
+  letter-spacing: 2px;
+  color: #9aa;
+  text-shadow: 0 0 8px rgba(0, 255, 204, 0.25);
+}
+
 /* ==================== MOBILE CONTROLS ==================== */
 #game-canvas {
   touch-action: none;
