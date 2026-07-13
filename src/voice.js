@@ -10,7 +10,7 @@ const VOICE_RANGE         = 42
 const PANIC_RMS_THRESHOLD = 0.18
 const PANIC_COOLDOWN      = 1.4
 const RECONNECT_MAX_WAIT  = 16000   // ms — cap for exponential back-off
-const RELAY_GRACE_MS      = 8000    // ms — WebRTC gets this long before relay kicks in
+const RELAY_GRACE_MS      = 2000    // ms — WebRTC gets this long before relay kicks in
 const RELAY_RATE          = 16000   // Hz — mono PCM sample rate for relayed audio
 
 // VAD (Voice Activity Detection) — gates ONLY the PCM relay stream (bandwidth)
@@ -495,7 +495,9 @@ export class VoiceChat {
     _playRelayChunk(peerId, chunk) {
         if (this._webrtcLive.has(peerId)) return   // already hearing them over WebRTC
         const ctx = this._getAudioContext()
-        if (!ctx || ctx.state !== 'running') return
+        if (!ctx) return
+        if (ctx.state === 'suspended') { ctx.resume().catch(() => {}); return }
+        if (ctx.state !== 'running') return
         const graph = this._ensureGraph(peerId)
         if (!graph) return
 
