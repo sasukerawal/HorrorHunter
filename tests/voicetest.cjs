@@ -124,12 +124,9 @@ async function snapshot(page) {
     console.log('game started on both clients; waiting for voice to settle…')
     await sleep(KILL_UDP ? 14000 : 8000)   // give ICE (or the 8s relay grace) time
 
-    // Normal mode: NO forcing — the always-on WebRTC track must carry audio by itself.
-    // Relay mode: hold PTT (relay is VAD/PTT-gated by design for bandwidth).
-    if (KILL_UDP) {
-        for (const s of [A, B]) await s.page.evaluate(() => window.__bh.voice.pttHeld(true))
-        await sleep(1000)
-    }
+    // Hold PTT on both clients — PTT is now the default mode (hold V to talk).
+    for (const s of [A, B]) await s.page.evaluate(() => window.__bh.voice.pttHeld(true))
+    await sleep(500)
 
     for (const s of [A, B]) {
         console.log(`\n--- ${s.tag} snapshot ---`)
