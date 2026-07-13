@@ -554,9 +554,13 @@ function setupMobileControls() {
 }
 
 // ─── GAME LOOP ───
-function gameLoop() {
+let _lastFrameTs = 0
+function gameLoop(ts = 0) {
     requestAnimationFrame(gameLoop)
     if (!gameRunning) return
+    // Cap to ~60 fps — prevents 2× GPU load on 120/144 Hz displays with no horror benefit
+    if (ts - _lastFrameTs < 14) return
+    _lastFrameTs = ts
 
     const dt = Math.min(engine.clock.getDelta(), 0.05)
     elapsed += dt
@@ -705,11 +709,12 @@ function gameLoop() {
         hud.setFinalMinute()
     }
 
-    // Fear glitch overlays
+    // Fear glitch overlays — change-guarded so classList mutation only happens on transitions
     if (gameCanvasEl) {
-        gameCanvasEl.classList.toggle('fear-state', localFear > 0.7)
-        gameCanvasEl.classList.toggle('fear-glitch', localFear > 0.8)
-        gameCanvasEl.classList.toggle('high-panic', localFear > 0.8)
+        const fs = localFear > 0.7, fg = localFear > 0.8
+        if (gameCanvasEl.classList.contains('fear-state') !== fs) gameCanvasEl.classList.toggle('fear-state', fs)
+        if (gameCanvasEl.classList.contains('fear-glitch') !== fg) gameCanvasEl.classList.toggle('fear-glitch', fg)
+        if (gameCanvasEl.classList.contains('high-panic')  !== fg) gameCanvasEl.classList.toggle('high-panic',  fg)
     }
 
     // Vignette: Prey gets BPM tunnel vision; Hunter gets weaker peer-fear radio bleed.

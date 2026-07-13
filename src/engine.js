@@ -5,7 +5,7 @@ import { VolumetricFlashlight } from './volumetricFlashlight.js'
 
 const FLASHLIGHT_BASE_INTENSITY = 65             // bright, readable beam at 0.85 exposure
 const FLASHLIGHT_BASE_ANGLE     = Math.PI / 7   // ~25.7 deg
-const FLASHLIGHT_BASE_DISTANCE  = 40
+const FLASHLIGHT_BASE_DISTANCE  = 65
 const HUNTER_BASE_EXPOSURE      = 0.85           // dark world; flashlight punches through
 const TUNNEL_BPM_THRESHOLD      = 100
 const TUNNEL_BPM_FULL           = 160
@@ -450,7 +450,7 @@ export class Engine {
             // Hunter — world is dark; only the flashlight cone reveals geometry.
             // Fog at 0.055 keeps distant rooms black without cutting off the 40-unit beam.
             // A hair of ambient (0.04) lets the hunter barely read surfaces right in front.
-            if (this.scene.fog?.density !== undefined) this.scene.fog.density = 0.055
+            if (this.scene.fog?.density !== undefined) this.scene.fog.density = 0.032
             if (this.ambientLight)     this.ambientLight.intensity = 0.04
             if (this.hemisphereLight)  this.hemisphereLight.intensity = 0.0
             if (this.moonLight)        this.moonLight.intensity = 0.0

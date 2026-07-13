@@ -1,7 +1,7 @@
 // src/volumetricFlashlight.js — SpotLight + visible volumetric cone
 import * as THREE from 'three'
 
-const BEAM_LENGTH    = 40
+const BEAM_LENGTH    = 65
 const BEAM_ANGLE     = Math.PI / 7   // ~25.7 deg — tight, believable torch
 const BASE_INTENSITY = 65            // bright, readable beam at full hunter exposure
 
