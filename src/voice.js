@@ -66,7 +66,7 @@ export class VoiceChat {
         this._vadCloseTimer  = 0      // hangover countdown
         this._noiseFloor     = 0.004  // adaptive per-mic quiet level (EMA)
         this._vadOpenUntil   = 0      // Date.now() deadline for the start-open grace
-        this._pushToTalk     = false  // always-on; PTT mode only when explicitly enabled
+        this._pushToTalk     = true   // hold V to talk
         this._pttHeld        = false
         this._currentRMS     = 0
         this._voiceFear      = 0      // 0..1 — sustained loudness/breathing → fear surrogate
@@ -774,7 +774,11 @@ export class VoiceChat {
     /** Toggle push-to-talk mode. When enabled, only transmits while pttHeld(true) is set. */
     setPushToTalk(enabled) { this._pushToTalk = !!enabled; if (!enabled) this._pttHeld = false }
     /** Press/release PTT. While held, always transmits regardless of VAD mode. */
-    pttHeld(held) { this._pttHeld = !!held }
+    pttHeld(held) {
+        this._pttHeld = !!held
+        // Immediately enable/disable track — don't wait for the 80-180ms update tick
+        if (this._pushToTalk) this._setMicTransmitting(held)
+    }
 
     /**
      * Update HRTF listener pose and per-peer speaker positions for 3D directional audio.
