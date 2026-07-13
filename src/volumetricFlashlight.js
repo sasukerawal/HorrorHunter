@@ -2,8 +2,8 @@
 import * as THREE from 'three'
 
 const BEAM_LENGTH    = 65
-const BEAM_ANGLE     = Math.PI / 7   // ~25.7 deg — tight, believable torch
-const BASE_INTENSITY = 65            // bright, readable beam at full hunter exposure
+const BEAM_ANGLE     = Math.PI / 5.5  // ~32.7 deg — wider cone, more area lit
+const BASE_INTENSITY = 200            // high intensity so surfaces inside cone are clearly visible
 
 const VOLUMETRIC_VS = /* glsl */`
     varying vec3 vLocalPos;
@@ -95,14 +95,14 @@ export class VolumetricFlashlight {
         this.camera = camera
 
         // ───── Scene illumination (real spotlight) ─────
-        this.light = new THREE.SpotLight('#fff5e0', BASE_INTENSITY, BEAM_LENGTH, BEAM_ANGLE, 0.25, 1.6)
+        this.light = new THREE.SpotLight('#fff5e0', BASE_INTENSITY, BEAM_LENGTH, BEAM_ANGLE, 0.15, 1.0)
         this.light.position.set(0, -0.03, 0)
         camera.add(this.light)
         camera.add(this.light.target)
         this.light.target.position.set(0, 0, -10)
 
         // Warm fill so close surfaces don't go pitch-black at the hunter's feet
-        this.fill = new THREE.PointLight('#fff5e0', 4, 6)
+        this.fill = new THREE.PointLight('#fff5e0', 8, 8)
         camera.add(this.fill)
 
         // ───── Visible volumetric cone ─────
@@ -163,17 +163,17 @@ export class VolumetricFlashlight {
         // Flicker picks new TARGETS at the same cadence, but the actual value
         // eases toward them — instant snapping read as jitter, easing reads as
         // a dying bulb. Fast enough (dt*28) to still feel like a flicker.
-        if (fearLevel > 0.8) {
+        if (fearLevel > 0.9) {
             this._flickerTimer += delta
-            if (this._flickerTimer > 0.05) {
-                this._flickerTimer   = 0
-                this._flickerTarget = Math.random() < 0.22 ? 0.05 : (0.4 + Math.random() * 0.7)
+            if (this._flickerTimer > 0.07) {
+                this._flickerTimer  = 0
+                this._flickerTarget = Math.random() < 0.15 ? 0.2 : (0.65 + Math.random() * 0.4)
             }
-        } else if (fearLevel > 0.6) {
+        } else if (fearLevel > 0.75) {
             this._flickerTimer += delta
-            if (this._flickerTimer > 0.06 + Math.random() * 0.08) {
-                this._flickerTimer   = 0
-                this._flickerTarget = Math.random() < 0.15 ? 0.15 : (0.6 + Math.random() * 0.5)
+            if (this._flickerTimer > 0.10 + Math.random() * 0.10) {
+                this._flickerTimer  = 0
+                this._flickerTarget = Math.random() < 0.08 ? 0.4 : (0.8 + Math.random() * 0.25)
             }
         } else {
             this._flickerTarget = 1.0

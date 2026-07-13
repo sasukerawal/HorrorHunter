@@ -3,10 +3,10 @@ import * as THREE from 'three'
 import { generateMap } from './map.js'
 import { VolumetricFlashlight } from './volumetricFlashlight.js'
 
-const FLASHLIGHT_BASE_INTENSITY = 65             // bright, readable beam at 0.85 exposure
-const FLASHLIGHT_BASE_ANGLE     = Math.PI / 7   // ~25.7 deg
+const FLASHLIGHT_BASE_INTENSITY = 200            // high so cone interior is clearly visible
+const FLASHLIGHT_BASE_ANGLE     = Math.PI / 5.5 // ~32.7 deg — matches volumetric cone
 const FLASHLIGHT_BASE_DISTANCE  = 65
-const HUNTER_BASE_EXPOSURE      = 0.85           // dark world; flashlight punches through
+const HUNTER_BASE_EXPOSURE      = 1.3            // raised so lit surfaces read clearly
 const TUNNEL_BPM_THRESHOLD      = 100
 const TUNNEL_BPM_FULL           = 160
 
@@ -311,18 +311,17 @@ export class Engine {
         // Tunnel-vision factor — 0 below threshold, 1 at full panic.
         const tunnel = Math.min(1, Math.max(0, (bpm - TUNNEL_BPM_THRESHOLD) / (TUNNEL_BPM_FULL - TUNNEL_BPM_THRESHOLD)))
 
-        light.angle    = FLASHLIGHT_BASE_ANGLE * (1 - tunnel * 0.5)
-        light.distance = FLASHLIGHT_BASE_DISTANCE - fearLevel * 6
+        light.angle    = FLASHLIGHT_BASE_ANGLE * (1 - tunnel * 0.4)
+        light.distance = FLASHLIGHT_BASE_DISTANCE
 
-        const baseInt = FLASHLIGHT_BASE_INTENSITY * (1 - tunnel * 0.3)
+        const baseInt = FLASHLIGHT_BASE_INTENSITY * (1 - tunnel * 0.25)
         const flicker = this.volumetric.getCurrentFlicker()
         light.intensity = baseInt * flicker
         fill.intensity  = baseInt * flicker * 0.3
 
-        // Beam sway when BPM > 100 — layered sines read as unsteady hands;
-        // the old per-frame random offsets read as jitter/glitching.
-        if (bpm > TUNNEL_BPM_THRESHOLD) {
-            const sh = Math.min(0.07, (bpm - TUNNEL_BPM_THRESHOLD) / 700)
+        // Sway only kicks in at very high BPM (130+) and stays subtle
+        if (bpm > 130) {
+            const sh = Math.min(0.025, (bpm - 130) / 1200)
             this._swayTime += dt
             const t = this._swayTime
             light.target.position.x = (Math.sin(t * 6.7) * 0.6 + Math.sin(t * 11.3) * 0.4) * sh

@@ -66,7 +66,7 @@ export class VoiceChat {
         this._vadCloseTimer  = 0      // hangover countdown
         this._noiseFloor     = 0.004  // adaptive per-mic quiet level (EMA)
         this._vadOpenUntil   = 0      // Date.now() deadline for the start-open grace
-        this._pushToTalk     = true   // hold V to talk; release = mic muted
+        this._pushToTalk     = false  // always-on; PTT mode only when explicitly enabled
         this._pttHeld        = false
         this._currentRMS     = 0
         this._voiceFear      = 0      // 0..1 — sustained loudness/breathing → fear surrogate

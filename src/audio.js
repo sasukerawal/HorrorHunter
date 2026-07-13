@@ -57,7 +57,7 @@ export class AudioSystem {
     playHeartbeat(fearLevel = 0) {
         if (!this.enabled) return
         this._resume()
-        const vol = 0.09 + fearLevel * 0.38   // quiet at rest, still swells with fear
+        const vol = 0.06 + fearLevel * 0.15   // subtle at rest, gentle swell with fear
         const playBeat = (offset, freq) => {
             const osc = this.ctx.createOscillator()
             const gain = this.ctx.createGain()
@@ -427,7 +427,7 @@ export class AudioSystem {
         this.footstepTimer += dt
         if (this.footstepTimer >= stepInterval) {
             this.footstepTimer = 0
-            this.playFootstep(0.14 + fearLevel * 0.3)
+            this.playFootstep(0.10 + fearLevel * 0.12)
         }
 
         // Heartbeat
